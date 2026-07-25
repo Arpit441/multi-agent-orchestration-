@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>Login · Agent Orchestrator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
+</head>
+<body>
+  <div class="page login-page">
+    <header class="hero">
+      <p class="brand">Agent Orchestrator</p>
+      <h1>Sign in to run agents</h1>
+      <p class="lede">Public demo is password-protected so Gemini quota isn’t burned by strangers.</p>
+    </header>
+
+    <section class="panel login-panel">
+      <h2>Demo access</h2>
+      <form id="login-form">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" required autocomplete="current-password" />
+        <p id="login-error" class="err hidden"></p>
+        <button type="submit">Continue</button>
+      </form>
+    </section>
+  </div>
+  <script>
+    document.getElementById("login-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = document.getElementById("login-error");
+      err.classList.add("hidden");
+      const password = document.getElementById("password").value;
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ password }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          err.textContent = data.detail || "Login failed";
+          err.classList.remove("hidden");
+          return;
+        }
+        window.location.href = "/";
+      } catch (ex) {
+        err.textContent = String(ex);
+        err.classList.remove("hidden");
+      }
+    });
+  </script>
+</body>
+</html>

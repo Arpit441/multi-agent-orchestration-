@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>Agent Orchestrator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css?v=13" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="hero-top">
+        <p class="brand">Agent Orchestrator</p>
+        <button id="logout-btn" class="ghost" type="button">Log out</button>
+      </div>
+      <h1>One orchestration engine. Multiple real workflows.</h1>
+      <p class="lede">Run a <strong>research report</strong> pipeline or a <strong>Customer Support Resolution Network</strong> (Frontline → Sentiment → FAQ / Technical / Billing → escalate to human when needed). Same retries, checkpoints, and crash-resume under both.</p>
+    </header>
+
+    <section class="panel start-panel">
+      <h2>Start a workflow</h2>
+      <form id="start-form">
+        <div class="field" style="margin-bottom:0.75rem">
+          <label for="pipeline">Pipeline</label>
+          <select id="pipeline" name="pipeline"></select>
+          <p id="pipeline-desc" class="muted" style="margin:0.35rem 0 0"></p>
+        </div>
+
+        <div id="research-fields" class="form-grid">
+          <div class="field">
+            <label for="topic">What do you want researched?</label>
+            <input id="topic" name="topic" placeholder="e.g. Edge AI market for industrial IoT" maxlength="500" />
+          </div>
+          <div class="field">
+            <label for="report-type">Report type</label>
+            <select id="report-type" name="report-type"></select>
+          </div>
+          <div class="field field-submit">
+            <button type="submit">Run agents</button>
+          </div>
+        </div>
+
+        <div id="support-fields" class="support-form hidden">
+          <p class="muted" style="margin-top:0">Manual ticket entry. Tickets from the connected Zendesk are handled in the <strong>Connect external apps</strong> panel below — hit <em>Resolve</em> next to an inbound ticket there.</p>
+          <div class="form-grid support-grid">
+            <div class="field">
+              <label for="customer-name">Customer name</label>
+              <input id="customer-name" value="Priya Sharma" maxlength="120" />
+            </div>
+            <div class="field">
+              <label for="ticket-subject">Subject</label>
+              <input id="ticket-subject" placeholder="Charged twice for Pro" maxlength="300" />
+            </div>
+          </div>
+          <div class="field" style="margin-top:0.75rem">
+            <label for="ticket-message">Ticket message</label>
+            <textarea id="ticket-message" rows="4" placeholder="I've been charged twice for my Pro plan this month. Order #48291. This is the third time — I'm really frustrated." maxlength="5000"></textarea>
+          </div>
+          <div class="row" style="margin-top:0.75rem; justify-content:flex-end">
+            <button type="submit">Resolve ticket</button>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel start-panel hidden" id="knowledge-panel">
+      <h2>Organisation knowledge base</h2>
+      <p class="muted" style="margin-top:0">Upload policy / FAQ / tone guides (.txt, .md, .csv, .pdf). Specialists retrieve relevant chunks before drafting; the quality critic checks replies against them.</p>
+      <form id="knowledge-form" class="row" style="align-items:center; margin-top:0.75rem">
+        <input id="knowledge-file" type="file" accept=".txt,.md,.markdown,.csv,.pdf,text/plain" />
+        <button type="submit">Upload</button>
+      </form>
+      <p id="knowledge-status" class="muted" style="margin:0.5rem 0 0"></p>
+      <ul id="knowledge-list" class="knowledge-list"></ul>
+    </section>
+
+    <section class="panel start-panel hidden" id="integrations-panel">
+      <h2>Connect external apps</h2>
+      <p class="muted" style="margin-top:0">Simulated Zendesk connector — same inbound ticket → agents → approve → outbound reply flow as a real integration, without needing a Zendesk account.</p>
+      <div class="integration-card">
+        <div class="integration-head">
+          <div>
+            <strong>Zendesk</strong>
+            <span id="zd-badge" class="pill">disconnected</span>
+          </div>
+          <div class="row">
+            <button id="zd-connect-btn" type="button">Connect Zendesk</button>
+            <button id="zd-disconnect-btn" type="button" class="ghost hidden">Disconnect</button>
+          </div>
+        </div>
+        <p id="zd-status" class="muted" style="margin:0.5rem 0 0"></p>
+        <div id="zd-connected-block" class="hidden" style="margin-top:0.85rem">
+          <div class="row" style="justify-content:space-between; align-items:center">
+            <h3 style="margin:0">Inbound tickets</h3>
+            <button id="zd-refresh-btn" type="button" class="ghost">Refresh</button>
+          </div>
+          <ul id="zd-ticket-list" class="knowledge-list"></ul>
+          <h3 style="margin-top:1rem">Outbound delivery log</h3>
+          <ul id="zd-delivery-list" class="knowledge-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <aside class="panel">
+        <h2>Runs</h2>
+        <ul id="run-list" class="run-list"></ul>
+      </aside>
+
+      <main class="panel detail">
+        <div class="detail-header">
+          <h2 id="detail-title">Select a run</h2>
+          <span id="status-pill" class="pill">—</span>
+        </div>
+        <p id="detail-meta" class="meta"></p>
+
+        <div id="graph-path" class="graph-path"></div>
+
+        <div id="delivered-banner" class="delivered-banner hidden">
+          <div>
+            <strong>Report delivered</strong>
+            <p>Agents finished and you approved. Full report is shown below.</p>
+          </div>
+          <button id="open-report-btn" type="button" class="ok">View report</button>
+        </div>
+
+        <div id="paused-banner" class="paused-banner hidden">
+          <div>
+            <strong>Waiting for your approval</strong>
+            <p>Review the draft and approve to deliver, or reject.</p>
+          </div>
+          <button id="open-modal-btn" type="button">Review &amp; decide</button>
+        </div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="agents" type="button">Agent activity</button>
+          <button class="tab" data-tab="report" type="button">Final output</button>
+          <button class="tab" data-tab="trace" type="button">Execution trace</button>
+          <button class="tab" data-tab="state" type="button">Raw state</button>
+        </div>
+
+        <section id="tab-agents" class="tab-panel">
+          <div id="agent-feed" class="agent-feed"></div>
+        </section>
+
+        <section id="tab-report" class="tab-panel hidden">
+          <div class="report-toolbar">
+            <button id="download-md-btn" type="button" class="ghost" disabled>Download .md</button>
+            <button id="print-btn" type="button" class="ghost" disabled>Print / PDF</button>
+          </div>
+          <div id="report-view" class="report empty">No report yet.</div>
+        </section>
+
+        <section id="tab-trace" class="tab-panel hidden">
+          <div id="trace" class="trace"></div>
+        </section>
+
+        <section id="tab-state" class="tab-panel hidden">
+          <pre id="state-view" class="code"></pre>
+        </section>
+      </main>
+    </section>
+  </div>
+
+  <!-- Approval modal -->
+  <div id="hitl-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="hitl-title">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <header class="modal-header">
+        <div>
+          <h3 id="hitl-title">Human checkpoint</h3>
+          <p id="hitl-message" class="muted"></p>
+        </div>
+        <button type="button" class="ghost" data-close-modal aria-label="Close">Close</button>
+      </header>
+      <div class="modal-body">
+        <div id="hitl-preview" class="hitl-preview"></div>
+      </div>
+      <footer class="modal-footer">
+        <textarea id="hitl-comment" placeholder="Optional comment or edit notes"></textarea>
+        <div class="row modal-actions">
+          <button id="approve-btn" class="ok" type="button">Approve &amp; deliver</button>
+          <button id="reject-btn" class="danger" type="button">Reject</button>
+          <button id="resume-btn" type="button">Resume crashed run</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=13"></script>
+</body>
+</html>

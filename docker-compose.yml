@@ -1,0 +1,21 @@
+services:
+  orchestrator:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-lite-latest}
+      DATABASE_PATH: /app/data/orchestrator.db
+      HOST: 0.0.0.0
+      PORT: 8000
+      APP_PASSWORD: ${APP_PASSWORD}
+      API_KEY: ${API_KEY:-}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    volumes:
+      - orchestrator_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  orchestrator_data:
