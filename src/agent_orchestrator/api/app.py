@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -33,6 +34,24 @@ import agent_orchestrator.nodes  # noqa: F401
 load_dotenv(override=True)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "trace_viewer" / "static"
+
+
+def _asset_version() -> str:
+    """Bust browser cache whenever any static UI file changes."""
+    newest = 0
+    for name in ("index.html", "app.js", "styles.css"):
+        path = STATIC_DIR / name
+        if path.exists():
+            newest = max(newest, int(path.stat().st_mtime))
+    return str(newest or int(os.environ.get("STATIC_ASSET_VERSION", "1")))
+
+
+def _render_index_html() -> str:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    ver = _asset_version()
+    html = re.sub(r"/static/styles\.css(\?v=\d+)?", f"/static/styles.css?v={ver}", html)
+    html = re.sub(r"/static/app\.js(\?v=\d+)?", f"/static/app.js?v={ver}", html)
+    return html
 
 
 def create_app() -> FastAPI:
@@ -80,6 +99,16 @@ def create_app() -> FastAPI:
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+        @app.middleware("http")
+        async def _no_cache_static(request: Request, call_next):
+            response = await call_next(request)
+            path = request.url.path
+            if path == "/" or path.startswith("/static/") or path == "/login":
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+            return response
+
         @app.get("/login")
         async def login_page() -> FileResponse:
             return FileResponse(
@@ -91,8 +120,8 @@ def create_app() -> FastAPI:
         async def index(request: Request):
             if auth_enabled(settings) and not is_authenticated(request, settings):
                 return RedirectResponse(url="/login", status_code=302)
-            return FileResponse(
-                STATIC_DIR / "index.html",
+            return HTMLResponse(
+                content=_render_index_html(),
                 headers={
                     "Cache-Control": "no-cache, no-store, must-revalidate",
                     "Pragma": "no-cache",

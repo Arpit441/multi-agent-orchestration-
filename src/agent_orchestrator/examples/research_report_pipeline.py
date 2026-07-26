@@ -117,14 +117,19 @@ def build_research_report_graph() -> Graph:
             "system_prompt": (
                 "You are a senior research analyst. Given a topic, produce a concise "
                 "research brief: key questions, angles to investigate, and what evidence "
-                "to look for. Use organisation knowledge context if provided. Be specific."
+                "to look for. Use organisation knowledge context if provided. Be specific. "
+                "Return JSON with exactly two keys: research_brief (string) and "
+                "search_queries (array of 2-3 focused query strings). Every search query "
+                "must preserve the user's core topic; do not drift to adjacent industries."
             ),
             "user_template": (
                 "Topic: {topic}\n\n"
                 "Organisation knowledge (may be empty):\n{knowledge_context}\n\n"
-                "Write a short research plan and search query suggestions."
+                "Create the research brief and focused web search queries. Return JSON only."
             ),
-            "output_key": "research_brief",
+            "output_key": "research_plan",
+            "json_mode": True,
+            "flatten_keys": ["research_brief", "search_queries"],
             "temperature": 0.3,
         },
         retry_policy=RetryPolicy(
@@ -139,8 +144,8 @@ def build_research_report_graph() -> Graph:
         "tool",
         config={
             "tool": "web_search",
-            "query_key": "topic",
-            "max_results": 5,
+            "query_key": "search_queries",
+            "max_results": 6,
         },
         retry_policy=RetryPolicy(max_attempts=3, timeout_seconds=45),
     )
@@ -152,24 +157,40 @@ def build_research_report_graph() -> Graph:
             "system_prompt": (
                 "You are a professional research writer. Draft a clear, well-structured "
                 "markdown report grounded in the provided search notes — do not invent "
-                "facts. If revision feedback is present, address it explicitly. "
-                "ALWAYS end the report with a '## Sources' section that lists the provided "
-                "sources as markdown links; cite them inline like [1], [2] where relevant."
+                "facts. If HUMAN REVISION REQUEST is present, you MUST revise the previous "
+                "draft to satisfy every point in that request before anything else. "
+                "Only cite URLs supplied in 'Verified web sources'; never invent, alter, or "
+                "substitute a URL. If verified sources are present, cite them inline like "
+                "[1], [2] and end with a matching '## Sources' section. If none are present, "
+                "do not add citations or a Sources section; explicitly state that no verified "
+                "web sources were available."
             ),
             "user_template": (
                 "Topic: {topic}\n\n"
                 "Report type instructions:\n{report_type_instructions}\n\n"
+                "HUMAN REVISION REQUEST (highest priority — address every point):\n"
+                "{human_feedback}\n\n"
+                "Previous draft to revise (may be empty on first write):\n{previous_draft}\n\n"
                 "Research brief:\n{research_brief}\n\n"
                 "Search notes:\n{research_notes}\n\n"
+                "Search status:\n{search_warning}\n\n"
                 "Organisation knowledge (uploaded docs):\n{knowledge_context}\n\n"
-                "Sources to cite (use these exact links in the Sources section):\n{sources_markdown}\n\n"
-                "Revision feedback (may be empty):\n{feedback}\n\n"
-                "Write the full report in markdown, ending with a '## Sources' section."
+                "Verified web sources (the only URLs you may cite):\n{sources_markdown}\n\n"
+                "Other revision notes:\n{feedback}\n\n"
+                "Write the full updated report in markdown. If a human revision request is "
+                "present, start from the previous draft and apply those changes explicitly."
             ),
             "output_key": "report",
-            "temperature": 0.5,
+            "temperature": 0.4,
         },
         retry_policy=RetryPolicy(max_attempts=3, timeout_seconds=120),
+    )
+
+    builder.add_node(
+        "source_guard",
+        "tool",
+        config={"tool": "source_guard"},
+        retry_policy=RetryPolicy(max_attempts=1, timeout_seconds=10),
     )
 
     builder.add_node(
@@ -199,8 +220,9 @@ def build_research_report_graph() -> Graph:
         "human_approve",
         "checkpoint",
         config={
-            "message": "Review the final report and approve, reject, or edit before delivery.",
+            "message": "Review the final report and approve, reject, or request a revision before delivery.",
             "preview_keys": ["topic", "report", "critic_output", "score"],
+            "revise_to": "writer",
         },
         retry_policy=RetryPolicy(max_attempts=1, timeout_seconds=None),
     )
@@ -216,7 +238,8 @@ def build_research_report_graph() -> Graph:
     builder.add_edge("knowledge_lookup", "researcher")
     builder.add_edge("researcher", "web_search")
     builder.add_edge("web_search", "writer")
-    builder.add_edge("writer", "critic")
+    builder.add_edge("writer", "source_guard")
+    builder.add_edge("source_guard", "critic")
     builder.add_edge(
         "critic",
         "human_approve",
@@ -241,7 +264,14 @@ def default_initial_state(topic: str, report_type: str = "general") -> dict:
         "report_type": report_type,
         "report_type_instructions": report_type_instructions(report_type),
         "feedback": "",
+        "human_feedback": "",
+        "previous_draft": "",
+        "pending_human_revision": False,
+        "research_plan": {},
         "research_brief": "",
+        "search_queries": [],
+        "search_queries_used": [],
+        "search_warning": "",
         "research_notes": "",
         "sources_markdown": "",
         "report": "",

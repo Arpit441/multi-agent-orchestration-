@@ -4,6 +4,7 @@ const PIPELINE_NODES = {
     "researcher",
     "web_search",
     "writer",
+    "source_guard",
     "critic",
     "human_approve",
     "deliver",
@@ -21,30 +22,61 @@ const PIPELINE_NODES = {
   ],
 };
 
+/** Plain-language labels for the default UI. */
 const AGENT_META = {
-  knowledge_lookup: {
-    icon: "K",
-    label: "Knowledge Lookup",
-    role: "Retrieves relevant uploaded organisation documents",
-  },
-  researcher: { icon: "R", label: "Researcher", role: "Plans the investigation and drafts a research brief" },
-  web_search: { icon: "S", label: "Web Search", role: "Gathers external sources with a search tool" },
-  writer: { icon: "W", label: "Writer", role: "Drafts the report from the brief and findings" },
-  critic: { icon: "C", label: "Critic", role: "Scores the draft and sends it back if weak" },
-  human_approve: { icon: "H", label: "Human Checkpoint", role: "You approve before delivery" },
-  deliver: { icon: "D", label: "Deliver", role: "Finalizes the signed-off output" },
-  frontline: { icon: "F", label: "Frontline Agent", role: "Handles FAQs / classifies intent" },
-  sentiment: { icon: "M", label: "Sentiment Agent", role: "Detects frustrated or high-risk customers" },
-  faq_agent: { icon: "?", label: "FAQ Specialist", role: "Answers account and how-to questions" },
-  technical_agent: { icon: "T", label: "Technical Agent", role: "Diagnoses product and outage issues" },
-  billing_agent: { icon: "$", label: "Billing Agent", role: "Handles payment and refund issues" },
-  quality_critic: { icon: "Q", label: "Quality Critic", role: "Checks empathy, policy, and clarity" },
-  human_escalate: { icon: "H", label: "Escalation (Human)", role: "Routes to you when risk / frustration is high" },
+  knowledge_lookup: { icon: "1", label: "Search", role: "Look up uploaded documents" },
+  researcher: { icon: "2", label: "Analyze", role: "Plan what to investigate" },
+  web_search: { icon: "1", label: "Search", role: "Find web sources" },
+  writer: { icon: "3", label: "Draft", role: "Write the answer" },
+  source_guard: { icon: "✓", label: "Check sources", role: "Keep only verified links" },
+  critic: { icon: "4", label: "Verify", role: "Score quality and accuracy" },
+  human_approve: { icon: "★", label: "Your review", role: "You approve before delivery" },
+  deliver: { icon: "✓", label: "Finish", role: "Deliver the final answer" },
+  frontline: { icon: "1", label: "Triage", role: "Classify the ticket" },
+  sentiment: { icon: "2", label: "Assess tone", role: "Check urgency and frustration" },
+  faq_agent: { icon: "3", label: "Draft", role: "Answer FAQ-style questions" },
+  technical_agent: { icon: "3", label: "Draft", role: "Diagnose technical issues" },
+  billing_agent: { icon: "3", label: "Draft", role: "Handle billing questions" },
+  quality_critic: { icon: "4", label: "Verify", role: "Check reply quality" },
+  human_escalate: { icon: "★", label: "Your review", role: "You approve before sending" },
+};
+
+/** High-level progress stages shown to everyone. */
+const USER_STAGES = {
+  research_report: [
+    { id: "search", label: "Search", nodes: ["knowledge_lookup", "web_search"] },
+    { id: "analyze", label: "Analyze", nodes: ["researcher"] },
+    { id: "draft", label: "Draft", nodes: ["writer", "source_guard"] },
+    { id: "verify", label: "Verify", nodes: ["critic", "human_approve", "deliver"] },
+  ],
+  support_resolution: [
+    { id: "search", label: "Search", nodes: ["knowledge_lookup"] },
+    { id: "analyze", label: "Analyze", nodes: ["frontline", "sentiment"] },
+    {
+      id: "draft",
+      label: "Draft",
+      nodes: ["faq_agent", "technical_agent", "billing_agent"],
+    },
+    {
+      id: "verify",
+      label: "Verify",
+      nodes: ["quality_critic", "human_escalate", "deliver"],
+    },
+  ],
+};
+
+const STATUS_LABELS = {
+  PENDING: "Starting",
+  RUNNING: "Working",
+  RETRYING: "Retrying",
+  PAUSED: "Needs review",
+  COMPLETED: "Done",
+  FAILED: "Failed",
 };
 
 let selectedRunId = null;
 let pollTimer = null;
-let activeTab = "agents";
+let activeTab = "answer";
 let lastStatus = null;
 let modalAutoOpenedFor = null;
 let currentReportText = "";
@@ -131,43 +163,39 @@ function nodeOrderFor(run) {
   return PIPELINE_NODES[name] || PIPELINE_NODES.research_report;
 }
 
-function renderGraphPath(run) {
-  const el = document.getElementById("graph-path");
-  el.innerHTML = "";
-  const order = nodeOrderFor(run);
-  const executed = new Set(
-    (run.trace || []).filter((t) => t.outcome === "success").map((t) => t.node_name)
-  );
-  const errored = new Set(
-    (run.trace || []).filter((t) => t.outcome === "error").map((t) => t.node_name)
-  );
-  // Only show nodes that ran, plus current, plus full template for research; for support hide unused specialists unless executed/current
-  const visible =
-    run.graph_name === "support_resolution"
-      ? order.filter(
-          (n) =>
-            !["faq_agent", "technical_agent", "billing_agent"].includes(n) ||
-            executed.has(n) ||
-            run.current_node === n ||
-            (run.trace || []).some((t) => t.node_name === n)
-        )
-      : order;
+function stagesFor(run) {
+  return USER_STAGES[run.graph_name] || USER_STAGES.research_report;
+}
 
-  visible.forEach((name, i) => {
-    if (i > 0) {
-      const arrow = document.createElement("span");
-      arrow.className = "arrow";
-      arrow.textContent = "→";
-      el.appendChild(arrow);
-    }
-    const chip = document.createElement("span");
-    chip.className = "node-chip";
-    chip.textContent = AGENT_META[name]?.label || name;
-    if (errored.has(name) && run.current_node === name) chip.classList.add("error");
-    else if (run.current_node === name) chip.classList.add("current");
-    else if (executed.has(name)) chip.classList.add("done");
-    el.appendChild(chip);
+function renderSimpleProgress(run) {
+  const el = document.getElementById("simple-progress");
+  if (!el) return;
+  el.innerHTML = "";
+  const stages = stagesFor(run);
+  const events = run.trace || [];
+  const current = run.current_node;
+
+  stages.forEach((stage) => {
+    const li = document.createElement("li");
+    const stageEvents = events.filter((t) => stage.nodes.includes(t.node_name));
+    const hasError = stageEvents.some((t) => t.outcome === "error");
+    const touched = stageEvents.length > 0 || stage.nodes.includes(current);
+    const isCurrent = stage.nodes.includes(current);
+
+    let cls = "todo";
+    if (run.status === "COMPLETED") cls = "done";
+    else if (hasError) cls = "error";
+    else if (run.status === "PAUSED" && isCurrent) cls = "paused";
+    else if (["RUNNING", "RETRYING", "PENDING"].includes(run.status) && isCurrent) cls = "current";
+    else if (touched && !isCurrent) cls = "done";
+    li.className = cls;
+    li.innerHTML = `<span class="step-dot"></span><span class="step-label">${esc(stage.label)}</span>`;
+    el.appendChild(li);
   });
+}
+
+function renderGraphPath(run) {
+  renderSimpleProgress(run);
 }
 
 // Build a human-readable "what this agent produced" summary per node.
@@ -193,10 +221,26 @@ function agentContribution(nodeName, ev, state) {
         .join("");
       return { kind: "html", body: `<p class="muted">${n} doc(s) indexed · top chunks:</p><ul class="sources">${items}</ul>` };
     }
-    case "researcher":
-      return { kind: "markdown", body: out.research_brief || state.research_brief };
+    case "researcher": {
+      const plan = out.research_plan || state.research_plan || {};
+      const brief = out.research_brief || plan.research_brief || state.research_brief || "";
+      const queries = out.search_queries || plan.search_queries || state.search_queries || [];
+      const queryHtml = Array.isArray(queries) && queries.length
+        ? `<p class="muted"><strong>Planned searches</strong></p><ul>${queries
+            .map((q) => `<li><code>${esc(q)}</code></li>`)
+            .join("")}</ul>`
+        : "";
+      return { kind: "html", body: `${mdToHtml(brief)}${queryHtml}` };
+    }
     case "web_search": {
       const results = out.search_results || state.search_results || [];
+      const used = out.search_queries_used || state.search_queries_used || [];
+      const cacheHit = out.search_cache_hit ?? state.search_cache_hit;
+      const meta = Array.isArray(used) && used.length
+        ? `<p class="muted">Queries used: ${used.map((q) => `<code>${esc(q)}</code>`).join(" · ")}${
+            cacheHit ? " · cache hit" : " · live search"
+          }</p>`
+        : "";
       if (Array.isArray(results) && results.length) {
         const items = results
           .map(
@@ -206,12 +250,23 @@ function agentContribution(nodeName, ev, state) {
               )}</a><br /><span class="muted">${esc((r.body || "").slice(0, 180))}</span></li>`
           )
           .join("");
-        return { kind: "html", body: `<ul class="sources">${items}</ul>` };
+        return { kind: "html", body: `${meta}<ul class="sources">${items}</ul>` };
       }
-      return { kind: "text", body: "No sources captured." };
+      const warning = out.search_warning || state.search_warning || "No relevant sources captured.";
+      return { kind: "html", body: `${meta}<p class="feedback">${esc(warning)}</p>` };
     }
     case "writer":
       return { kind: "markdown", body: out.report || state.report };
+    case "source_guard": {
+      const check = out.source_validation || state.source_validation || {};
+      const removed = check.removed_url_count || 0;
+      return {
+        kind: "html",
+        body: `<p><strong>${esc(check.allowed_url_count || 0)}</strong> search URL(s) allowed · <strong>${esc(
+          removed
+        )}</strong> invented/unverified URL(s) removed.</p>`,
+      };
+    }
     case "critic":
     case "quality_critic": {
       const c = out.critic_output || out.quality_output || state.critic_output || state.quality_output || {};
@@ -287,14 +342,54 @@ function agentContribution(nodeName, ev, state) {
   }
 }
 
+function thinkingHtml(nodeName, ev, state) {
+  const thoughts = state.agent_thoughts || {};
+  const fromState = thoughts[nodeName] || state[`${nodeName}_thinking`] || "";
+  const fromOut =
+    (ev.output_snapshot && (ev.output_snapshot[`${nodeName}_thinking`] ||
+      (ev.output_snapshot.agent_thoughts || {})[nodeName])) ||
+    "";
+  const text = fromOut || fromState;
+  if (ev.outcome === "running" || (!text && ev.outcome === "running")) {
+    return `
+      <div class="thinking-block live" data-thinking-live="1">
+        <div class="thinking-label"><span class="thinking-pulse"></span> Working</div>
+        <p class="thinking-text">Preparing this step…</p>
+      </div>`;
+  }
+  if (!text) return "";
+  return `
+    <details class="thinking-block">
+      <summary class="thinking-label">Reasoning</summary>
+      <p class="thinking-text">${esc(text)}</p>
+    </details>`;
+}
+
 function renderAgentFeed(run) {
   const el = document.getElementById("agent-feed");
   el.innerHTML = "";
   const state = run.state || {};
   const events = run.trace || [];
 
-  if (!events.length) {
+  if (!events.length && !["RUNNING", "RETRYING", "PENDING"].includes(run.status)) {
     el.innerHTML = `<p class="muted">Waiting for the first agent to start…</p>`;
+    return;
+  }
+  if (!events.length) {
+    el.innerHTML = `
+      <div class="agent-card running">
+        <div class="agent-avatar">…</div>
+        <div class="agent-body">
+          <div class="agent-top">
+            <span class="agent-name">Starting</span>
+            <span class="agent-status running">thinking</span>
+          </div>
+          <div class="thinking-block live">
+            <div class="thinking-label"><span class="thinking-pulse"></span> Thinking</div>
+            <p class="thinking-text">Agents are spinning up…</p>
+          </div>
+        </div>
+      </div>`;
     return;
   }
 
@@ -304,34 +399,51 @@ function renderAgentFeed(run) {
     card.className = `agent-card ${ev.outcome}`;
 
     const ms = ev.duration_ms != null ? `${Math.round(ev.duration_ms)} ms` : "";
-    const attempt = ev.attempt > 1 ? ` · retry ${ev.attempt}` : "";
     const statusText =
       ev.outcome === "error"
         ? "failed"
         : ev.outcome === "paused"
-        ? "waiting"
-        : ev.outcome;
+        ? "waiting for you"
+        : ev.outcome === "running"
+        ? "working"
+        : "done";
+
+    const isToolish = ["web_search", "knowledge_lookup", "source_guard", "deliver"].includes(
+      ev.node_name
+    );
+    const think =
+      isToolish || ev.outcome === "paused"
+        ? ""
+        : thinkingHtml(ev.node_name, ev, state);
 
     const contrib = agentContribution(ev.node_name, ev, state);
     let bodyHtml = "";
-    if (contrib.body) {
+    if (ev.outcome !== "running" && contrib.body) {
       if (contrib.kind === "markdown") bodyHtml = `<div class="report">${mdToHtml(contrib.body)}</div>`;
       else if (contrib.kind === "html") bodyHtml = contrib.body;
       else bodyHtml = `<p>${esc(contrib.body)}</p>`;
     }
+
+    const techBits = [
+      ev.node_name,
+      ms ? ms : "",
+      ev.attempt > 1 ? `retry ${ev.attempt}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
 
     card.innerHTML = `
       <div class="agent-avatar">${esc(meta.icon)}</div>
       <div class="agent-body">
         <div class="agent-top">
           <span class="agent-name">${esc(meta.label)}</span>
-          <span class="agent-status ${ev.outcome}">${esc(statusText)}${esc(attempt)}${
-      ms ? ` · ${ms}` : ""
-    }</span>
+          <span class="agent-status ${ev.outcome}">${esc(statusText)}</span>
         </div>
         <p class="agent-role">${esc(meta.role)}</p>
         ${ev.error ? `<p class="agent-error">${esc(ev.error)}</p>` : ""}
+        ${think}
         <div class="agent-output ${bodyHtml ? "" : "hidden"}">${bodyHtml}</div>
+        ${techBits ? `<p class="agent-tech muted">${esc(techBits)}</p>` : ""}
       </div>
     `;
     el.appendChild(card);
@@ -339,7 +451,7 @@ function renderAgentFeed(run) {
     if (idx < events.length - 1) {
       const link = document.createElement("div");
       link.className = "handoff";
-      link.innerHTML = `<span>hands off to</span>`;
+      link.innerHTML = `<span>next</span>`;
       el.appendChild(link);
     }
   });
@@ -421,24 +533,18 @@ function renderHitl(run) {
   if (run.status === "COMPLETED" && (state.final_report || state.final_reply || state.report || state.delivered)) {
     deliveredBanner.classList.remove("hidden");
     const isSupport = run.graph_name === "support_resolution";
-    deliveredBanner.querySelector("strong").textContent = isSupport
-      ? "Ticket reply delivered"
-      : "Report delivered";
+    deliveredBanner.querySelector("strong").textContent = "Ready";
     deliveredBanner.querySelector("p").textContent = isSupport
       ? (() => {
-          const route = state.resolution_route || state.route_taken || state.intent || "—";
           const zd = state.zendesk_delivery;
           if (zd && zd.status === "delivered") {
-            return `Route: ${route}. Reply posted to Zendesk ${zd.external_ticket_id} (simulated).`;
+            return `Reply sent to Zendesk ${zd.external_ticket_id} (simulated).`;
           }
-          if (state.source === "zendesk" && state.external_ticket_id) {
-            return `Route: ${route}. Zendesk ticket ${state.external_ticket_id} · see delivery note in raw state.`;
-          }
-          return `Route: ${route}. Full reply is shown below.`;
+          return "Your support reply is below.";
         })()
-      : "Agents finished and you approved. Full report is shown below.";
+      : "Your research answer is below.";
     if (lastStatus !== "COMPLETED") {
-      switchTab("report");
+      switchTab("answer");
       if (state.source === "zendesk") {
         refreshZendesk().catch(() => {});
       }
@@ -447,16 +553,23 @@ function renderHitl(run) {
 
   if (run.status === "PAUSED") {
     pausedBanner.classList.remove("hidden");
-    pausedBanner.querySelector("strong").textContent = "Waiting for your approval";
-    pausedBanner.querySelector("p").textContent =
-      "Review the draft and approve to deliver, or reject.";
-    document.getElementById("hitl-message").textContent =
-      run.state?.checkpoint_message || run.error || "Waiting for approval";
+    const wasRevised =
+      !!state.pending_human_revision || Number(state.human_revision_count || 0) > 0;
+    pausedBanner.querySelector("strong").textContent = wasRevised
+      ? "Revised — review again"
+      : "Needs your review";
+    pausedBanner.querySelector("p").textContent = wasRevised
+      ? "The draft was updated from your notes. Approve to finish, or request another revision."
+      : "To change the draft, use Request revision with notes (Approve alone does not rewrite).";
+    document.getElementById("hitl-message").textContent = wasRevised
+      ? "This is a revised draft after your feedback. Review it again, then approve or revise."
+      : "Please review the draft. Comments only apply when you click Request revision.";
 
     const critic = state.critic_output || {};
     const score = critic.score ?? state.score;
     const feedback = critic.feedback ?? state.feedback;
     const approved = critic.approved ?? state.approved;
+    const humanNote = (state.human_feedback || "").trim();
     const report =
       state.draft_reply ||
       state.preliminary_reply ||
@@ -467,8 +580,8 @@ function renderHitl(run) {
     let criticHtml = "";
     if (score != null || feedback) {
       const badge = approved
-        ? `<span class="verdict ok">CRITIC APPROVED</span>`
-        : `<span class="verdict bad">CRITIC ASKED FOR REVISION</span>`;
+        ? `<span class="verdict ok">LOOKS GOOD</span>`
+        : `<span class="verdict bad">NEEDS IMPROVEMENT</span>`;
       criticHtml = `
         <div class="critic-head">${badge}${
           score != null ? `<span class="score">Score: ${esc(score)}/10</span>` : ""
@@ -487,12 +600,24 @@ function renderHitl(run) {
       .join(" · ");
 
     preview.innerHTML = `
+      ${
+        humanNote
+          ? `<div class="revision-note"><strong>Your revision notes</strong><p>${esc(humanNote)}</p></div>`
+          : ""
+      }
       ${criticHtml}
       ${routeBits ? `<p class="muted">${esc(routeBits)}</p>` : ""}
+      ${(() => {
+        const thoughts = state.agent_thoughts || {};
+        const keys = Object.keys(thoughts);
+        if (!keys.length) return "";
+        const lastKey = keys[keys.length - 1];
+        return `<details class="thinking-block"><summary class="thinking-label">Reasoning</summary><p class="thinking-text">${esc(thoughts[lastKey])}</p></details>`;
+      })()}
       <h4 class="preview-title">${
         run.graph_name === "support_resolution"
-          ? "Draft reply ready for your review"
-          : "Report ready for your review"
+          ? "Draft reply"
+          : "Draft answer"
       }</h4>
       <div class="report hitl-report">${
         report ? mdToHtml(report) : "<p class='muted'>No draft text in state yet.</p>"
@@ -522,47 +647,61 @@ function renderHitl(run) {
 
 function switchTab(tab) {
   activeTab = tab;
-  document.querySelectorAll(".tab").forEach((b) => {
-    b.classList.toggle("active", b.dataset.tab === tab);
-  });
-  document.querySelectorAll(".tab-panel").forEach((p) => {
-    p.classList.toggle("hidden", p.id !== `tab-${tab}`);
-  });
+  // Legacy no-op kept for older call sites; answer is always primary now.
+  if (tab === "report" || tab === "answer") {
+    document.getElementById("report-view")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } else if (tab === "agents") {
+    document.getElementById("process-panel")?.setAttribute("open", "");
+    document.getElementById("process-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } else if (tab === "trace" || tab === "state") {
+    document.getElementById("tech-panel")?.setAttribute("open", "");
+    document.getElementById("tech-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 async function selectRun(runId) {
   selectedRunId = runId;
   await refreshRuns();
   const run = await api(`/api/runs/${runId}`);
-  document.getElementById("detail-title").textContent =
-    run.state?.topic || run.state?.subject || run.run_id;
+  const title = run.state?.topic || run.state?.subject || "Untitled task";
+  document.getElementById("detail-title").textContent = title;
+  const kicker = document.getElementById("detail-kicker");
+  if (kicker) {
+    kicker.textContent =
+      run.graph_name === "support_resolution" ? "Support reply" : "Research report";
+  }
   const pill = document.getElementById("status-pill");
-  pill.textContent = run.status;
+  pill.textContent = STATUS_LABELS[run.status] || run.status;
   pill.className = `pill ${run.status}`;
-  const revisions = run.state?.revision_count ? ` · ${run.state.revision_count} revision(s)` : "";
-  const graphLabel = run.graph_name === "support_resolution" ? "support" : "research";
-  document.getElementById("detail-meta").textContent =
-    `${graphLabel} · ${run.run_id} · step ${run.step}${revisions} · updated ${fmtTime(run.updated_at)}`;
 
-  renderGraphPath(run);
+  const revisions = run.state?.revision_count ? `${run.state.revision_count} revision(s) · ` : "";
+  document.getElementById("detail-meta").textContent =
+    `${revisions}id ${run.run_id} · step ${run.step} · updated ${fmtTime(run.updated_at)}`;
+
+  renderSimpleProgress(run);
   renderAgentFeed(run);
   renderReport(run);
   renderTrace(run);
   renderHitl(run);
+  const prevStatus = lastStatus;
   lastStatus = run.status;
   document.getElementById("state-view").textContent = JSON.stringify(run.state, null, 2);
+
+  // Auto-expand process while working; keep answer primary when done.
+  const processPanel = document.getElementById("process-panel");
+  if (processPanel) {
+    if (["RUNNING", "RETRYING", "PENDING", "PAUSED"].includes(run.status)) {
+      processPanel.open = true;
+    } else if (run.status === "COMPLETED" && prevStatus !== "COMPLETED") {
+      processPanel.open = false;
+    }
+  }
 
   if (pollTimer) clearInterval(pollTimer);
   if (["RUNNING", "RETRYING", "PENDING"].includes(run.status)) {
     pollTimer = setInterval(() => selectRun(runId), 2000);
-  } else if (run.status === "PAUSED") {
-    // Keep polling lightly in case another tab resumes — but mostly static.
   }
 }
-
-document.querySelectorAll(".tab").forEach((btn) => {
-  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-});
 
 document.getElementById("start-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -600,7 +739,7 @@ document.getElementById("start-form").addEventListener("submit", async (e) => {
   if (pipeline === "research_report") {
     document.getElementById("topic").value = "";
   }
-  switchTab("agents");
+  switchTab("answer");
   await refreshRuns();
   await selectRun(data.run_id);
 });
@@ -831,7 +970,7 @@ async function startZendeskTicket(ticketId) {
     method: "POST",
     body: "{}",
   });
-  switchTab("agents");
+  switchTab("answer");
   await refreshRuns();
   await selectRun(data.run_id);
   await refreshZendesk();
@@ -892,12 +1031,42 @@ document.getElementById("print-btn")?.addEventListener("click", () => {
 document.getElementById("approve-btn").addEventListener("click", async () => {
   if (!selectedRunId) return;
   const comment = document.getElementById("hitl-comment").value;
+  if (comment.trim()) {
+    const useApproveAnyway = confirm(
+      "You typed feedback, but Approve does not rewrite the draft.\n\n" +
+        "OK = Approve as-is (ignore the comment for rewriting)\n" +
+        "Cancel = go back and use Request revision instead"
+    );
+    if (!useApproveAnyway) return;
+  }
   closeHitlModal();
   await api(`/api/runs/${selectedRunId}/approve`, {
     method: "POST",
     body: JSON.stringify({ decision: "approve", comment }),
   });
   // Poll until deliver finishes, then report tab auto-opens on COMPLETED.
+  const watch = async () => {
+    await selectRun(selectedRunId);
+    if (["RUNNING", "RETRYING", "PENDING"].includes(lastStatus)) {
+      setTimeout(watch, 1500);
+    }
+  };
+  setTimeout(watch, 500);
+});
+
+document.getElementById("revise-btn")?.addEventListener("click", async () => {
+  if (!selectedRunId) return;
+  const comment = document.getElementById("hitl-comment").value.trim();
+  if (!comment) {
+    alert("Add revision notes in the comment box (e.g. what the writer should fix).");
+    return;
+  }
+  closeHitlModal();
+  document.getElementById("hitl-comment").value = "";
+  await api(`/api/runs/${selectedRunId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ decision: "revise", comment }),
+  });
   const watch = async () => {
     await selectRun(selectedRunId);
     if (["RUNNING", "RETRYING", "PENDING"].includes(lastStatus)) {
@@ -929,10 +1098,6 @@ document.getElementById("resume-btn").addEventListener("click", async () => {
 });
 
 document.getElementById("open-modal-btn").addEventListener("click", () => openHitlModal());
-document.getElementById("open-report-btn").addEventListener("click", () => {
-  switchTab("report");
-  document.getElementById("tab-report")?.scrollIntoView({ behavior: "smooth", block: "start" });
-});
 
 document.querySelectorAll("[data-close-modal]").forEach((el) => {
   el.addEventListener("click", () => closeHitlModal());

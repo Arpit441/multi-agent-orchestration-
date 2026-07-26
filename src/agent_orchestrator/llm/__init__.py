@@ -76,19 +76,62 @@ class GeminiClient:
         return extract_json(text)
 
 
+def _sanitize_json_control_chars(text: str) -> str:
+    """Escape raw control characters that LLMs often leave inside JSON strings."""
+
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+        if ch == "\\" and in_string:
+            out.append(ch)
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            out.append(ch)
+            continue
+        if in_string and ord(ch) < 0x20:
+            out.append({
+                "\n": "\\n",
+                "\r": "\\r",
+                "\t": "\\t",
+                "\b": "\\b",
+                "\f": "\\f",
+            }.get(ch, f"\\u{ord(ch):04x}"))
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
 def extract_json(text: str) -> dict[str, Any]:
     text = text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+    candidates = [text]
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
-        return json.loads(fence.group(1))
+        candidates.append(fence.group(1))
     brace = re.search(r"\{.*\}", text, re.DOTALL)
     if brace:
-        return json.loads(brace.group(0))
-    raise ValueError(f"Could not parse JSON from model response: {text[:200]}")
+        candidates.append(brace.group(0))
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        for variant in (candidate, _sanitize_json_control_chars(candidate)):
+            try:
+                payload = json.loads(variant)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                continue
+    raise ValueError(
+        f"Could not parse JSON from model response: {text[:200]}"
+        + (f" ({last_error})" if last_error else "")
+    )
 
 
 _default_client: GeminiClient | None = None

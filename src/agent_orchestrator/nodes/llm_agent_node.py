@@ -9,6 +9,11 @@ from agent_orchestrator.core.policies import RetryPolicy
 from agent_orchestrator.core.registry import register_node
 from agent_orchestrator.core.state import State
 from agent_orchestrator.llm import get_gemini_client
+from agent_orchestrator.nodes.thinking import (
+    extract_thinking_from_payload,
+    split_thinking_text,
+    thinking_system_suffix,
+)
 
 
 @register_node("llm_agent")
@@ -33,6 +38,7 @@ class LLMAgentNode:
         self.output_key: str = config.get("output_key", f"{name}_output")
         self.json_mode: bool = bool(config.get("json_mode", False))
         self.temperature: float = float(config.get("temperature", 0.4))
+        self.emit_thinking: bool = bool(config.get("emit_thinking", True))
 
     def _render_user(self, state: State) -> str:
         ctx = {**state.data, "state": state.to_json()}
@@ -47,16 +53,34 @@ class LLMAgentNode:
                 f"LLM node '{self.name}' failed to render template: {exc}"
             ) from exc
 
+    def _store_thinking(self, state: State, thinking: str) -> None:
+        text = (thinking or "").strip()
+        if not text:
+            return
+        thoughts = dict(state.get("agent_thoughts") or {})
+        thoughts[self.name] = text
+        state.set("agent_thoughts", thoughts)
+        state.set("last_thinking", text)
+        state.set(f"{self.name}_thinking", text)
+
     async def run(self, state: State) -> State:
         client = get_gemini_client()
         user = self._render_user(state)
+        system = self.system_prompt
+        if self.emit_thinking:
+            system = f"{system}{thinking_system_suffix(json_mode=self.json_mode)}"
         try:
             if self.json_mode:
                 payload = await client.generate_json(
-                    system=self.system_prompt,
+                    system=system,
                     user=user,
                     temperature=self.temperature,
                 )
+                if isinstance(payload, dict):
+                    thinking = extract_thinking_from_payload(payload)
+                    self._store_thinking(state, thinking)
+                    # Keep tool/agent consumers free of the thinking metadata.
+                    payload = {k: v for k, v in payload.items() if k != "thinking"}
                 state.set(self.output_key, payload)
                 if isinstance(payload, dict):
                     default_flatten = (
@@ -99,11 +123,16 @@ class LLMAgentNode:
                         state.set("report", payload["preliminary_reply"])
                         state.set("draft_reply", payload["preliminary_reply"])
             else:
+                # One plain-text Gemini call. Long markdown reports break if forced
+                # through JSON (unescaped newlines → Invalid control character).
                 text = await client.generate(
-                    system=self.system_prompt,
+                    system=system,
                     user=user,
                     temperature=self.temperature,
                 )
+                if self.emit_thinking:
+                    thinking, text = split_thinking_text(text)
+                    self._store_thinking(state, thinking)
                 state.set(self.output_key, text)
         except NonRetryableError:
             raise

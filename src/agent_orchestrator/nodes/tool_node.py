@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Awaitable
+from urllib.parse import urlparse
 
 from agent_orchestrator.core.errors import NonRetryableError, RetryableError
 from agent_orchestrator.core.policies import RetryPolicy
@@ -24,16 +26,84 @@ def get_tool(name: str) -> ToolFn:
     return _TOOL_REGISTRY[name]
 
 
+_SEARCH_STOPWORDS = {
+    "about", "after", "before", "from", "into", "market", "report",
+    "research", "study", "that", "their", "this", "using", "what", "with",
+}
+_LOW_QUALITY_HOSTS = {
+    "facebook.com", "instagram.com", "linkedin.com", "pinterest.com",
+    "quora.com", "reddit.com", "tiktok.com",
+}
+
+
+def _search_terms(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", text.lower())
+        if len(token) >= 4 and token not in _SEARCH_STOPWORDS
+    }
+
+
+def _search_queries(raw: Any, topic: str, limit: int = 3) -> list[str]:
+    """Normalize planner output and keep every query anchored to the topic."""
+    if isinstance(raw, list):
+        candidates = [str(item).strip() for item in raw]
+    elif isinstance(raw, str) and raw.strip():
+        candidates = [
+            line.strip(" -•\t\"'`")
+            for line in raw.splitlines()
+            if line.strip()
+        ]
+    else:
+        candidates = []
+
+    topic_terms = _search_terms(topic)
+    queries: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        # Planner queries that drift away from the user's topic are re-anchored.
+        query = candidate
+        if topic_terms and not (_search_terms(candidate) & topic_terms):
+            query = f"{topic} {candidate}"
+        if query not in queries:
+            queries.append(query[:300])
+        if len(queries) >= limit:
+            break
+    return queries or [topic]
+
+
+def _result_relevance(item: dict[str, Any], topic: str, query: str) -> int:
+    """Reject obvious topic drift and rank useful citation candidates."""
+    href = str(item.get("href") or "")
+    host = urlparse(href).netloc.lower().removeprefix("www.")
+    if not href.startswith(("http://", "https://")):
+        return -1
+    if any(host == bad or host.endswith(f".{bad}") for bad in _LOW_QUALITY_HOSTS):
+        return -1
+
+    haystack = f"{item.get('title') or ''} {item.get('body') or ''}"
+    haystack_terms = _search_terms(haystack)
+    topic_overlap = len(_search_terms(topic) & haystack_terms)
+    if _search_terms(topic) and topic_overlap == 0:
+        return -1
+    query_overlap = len(_search_terms(query) & haystack_terms)
+    authority_bonus = 2 if host.endswith((".gov", ".edu", ".org")) else 0
+    return topic_overlap * 3 + query_overlap + authority_bonus
+
+
 async def web_search_tool(state: State, config: dict[str, Any]) -> dict[str, Any]:
-    """DuckDuckGo search — no API key required. Results cached by query."""
+    """Search planned queries, filter topic drift, and cache verified URLs."""
     from agent_orchestrator.api.cache_util import search_cache
 
-    query_key = config.get("query_key", "topic")
-    query = state.get(query_key) or state.get("search_query") or config.get("query")
-    if not query:
-        raise NonRetryableError("web_search requires a query in state or config")
+    topic = str(state.get("topic") or "").strip()
+    query_key = config.get("query_key", "search_queries")
+    raw_queries = state.get(query_key) or state.get("search_queries") or config.get("query")
+    if not topic and not raw_queries:
+        raise NonRetryableError("web_search requires a topic or planned search queries")
+    queries = _search_queries(raw_queries, topic or str(raw_queries))
     max_results = int(config.get("max_results", 5))
-    cache_key = f"{query}|{max_results}"
+    cache_key = f"{topic}|{'|'.join(queries)}|{max_results}|v2"
 
     if cache_key in search_cache:
         cached = dict(search_cache[cache_key])
@@ -41,22 +111,35 @@ async def web_search_tool(state: State, config: dict[str, Any]) -> dict[str, Any
         return cached
 
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
 
+        candidates: list[tuple[int, dict[str, Any]]] = []
         with DDGS() as ddgs:
-            results = list(ddgs.text(str(query), max_results=max_results))
+            for query in queries:
+                for item in ddgs.text(query, max_results=max_results):
+                    score = _result_relevance(item, topic, query)
+                    if score >= 0:
+                        candidates.append((score, item))
     except Exception as exc:  # noqa: BLE001
         raise RetryableError(f"web_search failed: {exc}") from exc
 
-    snippets = []
-    for item in results:
+    snippets: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for _, item in sorted(candidates, key=lambda pair: pair[0], reverse=True):
+        href = str(item.get("href") or "")
+        if href in seen_urls:
+            continue
+        seen_urls.add(href)
         snippets.append(
             {
                 "title": item.get("title"),
-                "href": item.get("href"),
+                "href": href,
                 "body": item.get("body"),
             }
         )
+        if len(snippets) >= max_results:
+            break
+
     sources_markdown = "\n".join(
         f"{i}. [{s.get('title') or s.get('href')}]({s.get('href')})"
         for i, s in enumerate(snippets, start=1)
@@ -64,13 +147,18 @@ async def web_search_tool(state: State, config: dict[str, Any]) -> dict[str, Any
     )
     payload = {
         "search_results": snippets,
-        "search_query": str(query),
+        "search_query": queries[0],
+        "search_queries_used": queries,
         "research_notes": "\n\n".join(
             f"[{i}] {s['title']}: {s['body']}"
             for i, s in enumerate(snippets, start=1)
             if s.get("body")
         ),
         "sources_markdown": sources_markdown,
+        "search_warning": (
+            "" if snippets else
+            "No relevant, verifiable web sources were returned. The report must not invent citations."
+        ),
         "search_cache_hit": False,
     }
     search_cache[cache_key] = {k: v for k, v in payload.items() if k != "search_cache_hit"}
@@ -99,8 +187,48 @@ async def knowledge_lookup_tool(state: State, config: dict[str, Any]) -> dict[st
     }
 
 
+async def source_guard_tool(state: State, config: dict[str, Any]) -> dict[str, Any]:
+    """Deterministically remove report URLs that were not returned by web search."""
+    report = str(state.get("report") or "")
+    allowed = {
+        str(item.get("href"))
+        for item in (state.get("search_results") or [])
+        if isinstance(item, dict) and item.get("href")
+    }
+    markdown_links = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+    invalid: list[str] = []
+
+    def _guard_link(match: re.Match[str]) -> str:
+        label, url = match.group(1), match.group(2)
+        if url in allowed:
+            return match.group(0)
+        invalid.append(url)
+        return label
+
+    cleaned = markdown_links.sub(_guard_link, report)
+    if not allowed:
+        # Source sections are only valid when the search tool returned verified URLs.
+        cleaned = re.sub(
+            r"\n##\s+Sources\b.*\Z",
+            "",
+            cleaned,
+            flags=re.IGNORECASE | re.DOTALL,
+        ).rstrip()
+
+    return {
+        "report": cleaned,
+        "source_validation": {
+            "allowed_url_count": len(allowed),
+            "removed_url_count": len(invalid),
+            "removed_urls": invalid,
+            "valid": not invalid,
+        },
+    }
+
+
 register_tool("web_search", web_search_tool)
 register_tool("knowledge_lookup", knowledge_lookup_tool)
+register_tool("source_guard", source_guard_tool)
 
 
 @register_node("tool")

@@ -82,7 +82,7 @@ class ZendeskWebhookRequest(BaseModel):
 
 
 class ApproveRequest(BaseModel):
-    decision: str = Field(default="approve", pattern="^(approve|reject)$")
+    decision: str = Field(default="approve", pattern="^(approve|reject|revise)$")
     comment: str | None = None
     edited_state: dict[str, Any] | None = None
 

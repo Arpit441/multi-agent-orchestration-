@@ -262,7 +262,49 @@ class GraphRunner:
             await self.store.save_run(run)
             return run
 
-        # Advance past the checkpoint node to the next edge target.
+        if decision == "revise":
+            note = (comment or "").strip()
+            if not note:
+                raise RuntimeError("Revision requires feedback in the comment field")
+            human_revs = int(run.state.get("human_revision_count") or 0) + 1
+            if human_revs > 5:
+                raise RuntimeError("Too many human revision rounds (max 5)")
+            target = self._revise_target(run)
+            if target not in self.graph.nodes:
+                raise RuntimeError(f"Cannot revise: target node '{target}' is not in the graph")
+
+            # Dedicated field so the critic's later "feedback" cannot overwrite human notes
+            # before the writer/specialist runs.
+            run.state.set("human_feedback", note)
+            run.state.set("feedback", note)
+            run.state.set("approved", False)
+            run.state.set("checkpoint_resolved", False)
+            run.state.set("awaiting_human", False)
+            run.state.set("pending_human_revision", True)
+            run.state.set("human_revision_count", human_revs)
+            run.state.set(
+                "revision_count",
+                int(run.state.get("revision_count") or 0) + 1,
+            )
+            # Keep prior draft available so the writer revises it instead of starting over.
+            prior = (
+                run.state.get("report")
+                or run.state.get("draft_reply")
+                or run.state.get("final_report")
+                or ""
+            )
+            if prior:
+                run.state.set("previous_draft", prior)
+            run.current_node = target
+            run.error = None
+            await self.store.save_run(run)
+            return await self.execute(run_id=run_id)
+
+        # Approve path — clear revision flags.
+        run.state.set("pending_human_revision", False)
+        run.state.set("human_feedback", "")
+        run.state.set("previous_draft", "")
+        run.state.set("checkpoint_resolved", True)
         if run.current_node:
             nxt = self.graph.next_nodes(run.current_node, run.state)
             if not nxt:
@@ -275,6 +317,29 @@ class GraphRunner:
         # Persist HITL decision before continuing so crash mid-approve is recoverable.
         await self.store.save_run(run)
         return await self.execute(run_id=run_id)
+
+    def _revise_target(self, run: RunRecord) -> str:
+        """Prefer checkpoint config, then writer, then support specialist by intent."""
+        node_name = run.current_node
+        if node_name and node_name in self.graph.nodes:
+            cfg = getattr(self.graph.nodes[node_name].instance, "config", {}) or {}
+            configured = cfg.get("revise_to")
+            if configured:
+                return str(configured)
+        if "writer" in self.graph.nodes:
+            return "writer"
+        intent = str(run.state.get("intent") or run.state.get("route_taken") or "").lower()
+        mapping = {
+            "faq": "faq_agent",
+            "technical": "technical_agent",
+            "billing": "billing_agent",
+        }
+        if intent in mapping and mapping[intent] in self.graph.nodes:
+            return mapping[intent]
+        for candidate in ("faq_agent", "frontline"):
+            if candidate in self.graph.nodes:
+                return candidate
+        raise RuntimeError("No revision target node available in this graph")
 
     async def resume(self, run_id: str, state_updates: dict[str, Any] | None = None) -> RunRecord:
         run = await self.store.load_run(run_id)

@@ -253,9 +253,13 @@ def build_support_resolution_graph() -> Graph:
         "Subject: {subject}\nMessage:\n{message}\n\n"
         "Frontline summary: {summary}\n"
         "Preliminary reply: {preliminary_reply}\n"
-        "Revision feedback: {feedback}\n\n"
+        "HUMAN REVISION REQUEST (highest priority):\n{human_feedback}\n"
+        "Previous draft to revise:\n{previous_draft}\n"
+        "Other revision feedback: {feedback}\n\n"
         "Organisation knowledge (uploaded docs):\n{knowledge_context}\n\n"
-        "Built-in policy:\n" + SUPPORT_POLICY + "\n\nReturn JSON only."
+        "Built-in policy:\n" + SUPPORT_POLICY + "\n\n"
+        "Return JSON only. If a human revision request is present, revise the previous "
+        "draft to satisfy it."
     )
 
     builder.add_node(
@@ -450,6 +454,9 @@ def default_support_state(
         "draft_reply": "",
         "suggested_action": "",
         "feedback": "",
+        "human_feedback": "",
+        "previous_draft": "",
+        "pending_human_revision": False,
         "frustrated": False,
         "urgency": "medium",
         "approved": False,

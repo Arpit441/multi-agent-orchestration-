@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=13" />
+  <link rel="stylesheet" href="/static/styles.css?v=19" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
@@ -114,55 +114,55 @@
 
       <main class="panel detail">
         <div class="detail-header">
-          <h2 id="detail-title">Select a run</h2>
+          <div>
+            <p class="detail-kicker" id="detail-kicker">Select a run</p>
+            <h2 id="detail-title">Your result will appear here</h2>
+          </div>
           <span id="status-pill" class="pill">—</span>
         </div>
-        <p id="detail-meta" class="meta"></p>
 
-        <div id="graph-path" class="graph-path"></div>
+        <ol id="simple-progress" class="simple-progress" aria-label="Progress"></ol>
 
         <div id="delivered-banner" class="delivered-banner hidden">
           <div>
-            <strong>Report delivered</strong>
-            <p>Agents finished and you approved. Full report is shown below.</p>
+            <strong>Ready</strong>
+            <p>Approved and delivered. Your answer is below.</p>
           </div>
-          <button id="open-report-btn" type="button" class="ok">View report</button>
         </div>
 
         <div id="paused-banner" class="paused-banner hidden">
           <div>
-            <strong>Waiting for your approval</strong>
-            <p>Review the draft and approve to deliver, or reject.</p>
+            <strong>Needs your review</strong>
+            <p>Check the draft, then approve, revise, or reject.</p>
           </div>
           <button id="open-modal-btn" type="button">Review &amp; decide</button>
         </div>
 
-        <div class="tabs">
-          <button class="tab active" data-tab="agents" type="button">Agent activity</button>
-          <button class="tab" data-tab="report" type="button">Final output</button>
-          <button class="tab" data-tab="trace" type="button">Execution trace</button>
-          <button class="tab" data-tab="state" type="button">Raw state</button>
-        </div>
-
-        <section id="tab-agents" class="tab-panel">
-          <div id="agent-feed" class="agent-feed"></div>
-        </section>
-
-        <section id="tab-report" class="tab-panel hidden">
-          <div class="report-toolbar">
-            <button id="download-md-btn" type="button" class="ghost" disabled>Download .md</button>
-            <button id="print-btn" type="button" class="ghost" disabled>Print / PDF</button>
+        <section class="answer-section">
+          <div class="answer-header">
+            <h3>Answer</h3>
+            <div class="report-toolbar">
+              <button id="download-md-btn" type="button" class="ghost" disabled>Download</button>
+              <button id="print-btn" type="button" class="ghost" disabled>Print</button>
+            </div>
           </div>
-          <div id="report-view" class="report empty">No report yet.</div>
+          <div id="report-view" class="report empty">Start a workflow to see the answer here.</div>
         </section>
 
-        <section id="tab-trace" class="tab-panel hidden">
+        <details class="process-panel" id="process-panel">
+          <summary>How we got here</summary>
+          <div id="agent-feed" class="agent-feed"></div>
+        </details>
+
+        <details class="tech-panel" id="tech-panel">
+          <summary>Technical details</summary>
+          <p id="detail-meta" class="meta"></p>
+          <div id="graph-path" class="graph-path hidden" aria-hidden="true"></div>
+          <h4 class="tech-subhead">Execution trace</h4>
           <div id="trace" class="trace"></div>
-        </section>
-
-        <section id="tab-state" class="tab-panel hidden">
+          <h4 class="tech-subhead">Raw state</h4>
           <pre id="state-view" class="code"></pre>
-        </section>
+        </details>
       </main>
     </section>
   </div>
@@ -182,16 +182,18 @@
         <div id="hitl-preview" class="hitl-preview"></div>
       </div>
       <footer class="modal-footer">
-        <textarea id="hitl-comment" placeholder="Optional comment or edit notes"></textarea>
+        <p class="muted hitl-hint">Type feedback, then click <strong>Request revision</strong> (not Approve). After a rewrite you will be asked to review again — that is expected.</p>
+        <textarea id="hitl-comment" placeholder="Required for Request revision — e.g. fix sources / rewrite section X"></textarea>
         <div class="row modal-actions">
           <button id="approve-btn" class="ok" type="button">Approve &amp; deliver</button>
+          <button id="revise-btn" class="revise" type="button">Request revision</button>
           <button id="reject-btn" class="danger" type="button">Reject</button>
-          <button id="resume-btn" type="button">Resume crashed run</button>
+          <button id="resume-btn" class="ghost" type="button">Resume crashed run</button>
         </div>
       </footer>
     </div>
   </div>
 
-  <script src="/static/app.js?v=13"></script>
+  <script src="/static/app.js?v=20"></script>
 </body>
 </html>
