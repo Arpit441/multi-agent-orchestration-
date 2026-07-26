@@ -30,6 +30,7 @@ const AGENT_META = {
   writer: { icon: "✍️", label: "Writer", role: "Drafts the report" },
   source_guard: { icon: "🛡️", label: "Source guard", role: "Keeps only verified links" },
   critic: { icon: "✅", label: "Verifier", role: "Scores quality" },
+  fixer: { icon: "🔧", label: "Fixer", role: "Recovers from agent failures" },
   human_approve: { icon: "👤", label: "You", role: "Human review (below threshold)" },
   deliver: { icon: "📦", label: "Deliver", role: "Final answer" },
   frontline: { icon: "🎫", label: "Frontline", role: "Classifies the ticket" },
@@ -48,6 +49,7 @@ const AGENT_TOOLS = {
   writer: "Verified sources",
   source_guard: "URL validation",
   critic: "Quality rubric",
+  fixer: "Error recovery",
   human_approve: "Human review",
   deliver: "Delivery",
   frontline: "Ticket context",
@@ -95,6 +97,10 @@ const STATUS_LABELS = {
 };
 
 let selectedRunId = null;
+/** @type {Map<string, boolean>} user open/closed prefs for agent cards across poll refreshes */
+const agentCardOpenPrefs = new Map();
+/** @type {string|null} workflow chosen on the landing picker before composer shows */
+let selectedWorkflow = null;
 let pollTimer = null;
 let activeTab = "answer";
 let lastStatus = null;
@@ -565,20 +571,38 @@ function userBubbleHtml(run) {
     </div>`;
 }
 
+function renderUserPrompt(run) {
+  const el = document.getElementById("user-prompt");
+  if (!el) return;
+  el.innerHTML = userBubbleHtml(run);
+}
+
 function renderAgentFeed(run) {
   const el = document.getElementById("agent-chat") || document.getElementById("agent-feed");
   if (!el) return;
-  el.innerHTML = userBubbleHtml(run);
+
+  // Keep expand/scroll state across poll re-renders so users can read thinking & mid-results.
+  const prevOpen = new Set(
+    [...el.querySelectorAll("details.agent-step[open]")].map((d) => d.dataset.node)
+  );
+  const prevMidOpen = new Set(
+    [...el.querySelectorAll("details.agent-step details.mid-result[open]")].map(
+      (d) => d.closest("details.agent-step")?.dataset.node
+    )
+  );
+  const prevScroll = el.scrollTop;
+
+  el.innerHTML = "";
   const state = run.state || {};
   const events = run.trace || [];
   const nodeOrder = PIPELINE_NODES[run.graph_name] || [];
 
   if (!events.length && !["RUNNING", "RETRYING", "PENDING"].includes(run.status)) {
-    el.innerHTML += `<p class="muted chat-empty">Waiting for the first agent to start…</p>`;
+    el.innerHTML = `<p class="muted chat-empty">Waiting for the first agent to start…</p>`;
     return;
   }
   if (!events.length) {
-    el.innerHTML += `
+    el.innerHTML = `
       <div class="agent-card running">
         <div class="agent-avatar">…</div>
         <div class="agent-body">
@@ -601,12 +625,17 @@ function renderAgentFeed(run) {
     const details = document.createElement("details");
     details.className = `agent-step ${ev.outcome}`;
     details.dataset.node = ev.node_name;
-    // Expand the active/last step and anything paused or errored; collapse finished steps.
+    const prefKey = `${run.run_id}:${ev.node_name}`;
+    const userPref = agentCardOpenPrefs.get(prefKey);
+    // Prefer user toggle, then prior open state, then live/paused defaults.
     details.open =
-      ev.outcome === "running" ||
-      ev.outcome === "paused" ||
-      ev.outcome === "error" ||
-      (isLast && run.status !== "COMPLETED");
+      userPref != null
+        ? userPref
+        : prevOpen.has(ev.node_name) ||
+          ev.outcome === "running" ||
+          ev.outcome === "paused" ||
+          ev.outcome === "error" ||
+          (isLast && run.status !== "COMPLETED");
 
     const durationText =
       ev.duration_ms != null
@@ -693,6 +722,24 @@ function renderAgentFeed(run) {
       </summary>
       <div class="agent-step-body">${bodyInner}</div>
     `;
+
+    if (details.open || prevMidOpen.has(ev.node_name)) {
+      details.querySelectorAll("details.mid-result").forEach((m) => {
+        m.open = true;
+      });
+    }
+
+    details.addEventListener("toggle", () => {
+      agentCardOpenPrefs.set(prefKey, details.open);
+      if (details.open) {
+        // When the user opens a card, surface thinking + mid-result immediately.
+        details.querySelectorAll("details.thinking-block, details.mid-result").forEach((m) => {
+          m.open = true;
+        });
+        details.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    });
+
     el.appendChild(details);
 
     if (idx < events.length - 1) {
@@ -705,8 +752,7 @@ function renderAgentFeed(run) {
     }
   });
 
-  // Auto-scroll chat to latest bubble
-  el.scrollTop = el.scrollHeight;
+  el.scrollTop = prevScroll;
 }
 
 function renderReport(run) {
@@ -948,25 +994,30 @@ function collectRunSources(run) {
 }
 
 function renderSources(run) {
-  const panel = document.getElementById("sources-panel");
+  const panel = document.getElementById("right-panel");
   const list = document.getElementById("sources-list");
   const countEl = document.getElementById("sources-count");
   const emptyEl = document.getElementById("sources-empty");
+  const fold = document.getElementById("resources-fold");
   if (!panel || !list) return;
+
+  // Always show the right rail while a run is open (agents live here).
+  panel.classList.remove("hidden");
+  document.querySelector(".chat-app")?.classList.add("has-sources");
 
   const sources = collectRunSources(run);
   list.innerHTML = "";
   if (countEl) countEl.textContent = `(${sources.length})`;
 
+  // Keep Resources collapsed by default so Agents stay fully visible.
+  // User can expand the toggle when they want sources.
+  if (fold && fold.dataset.userToggled !== "1") fold.open = false;
+
   if (!sources.length) {
-    panel.classList.add("hidden");
-    document.querySelector(".chat-app")?.classList.remove("has-sources");
     if (emptyEl) emptyEl.classList.remove("hidden");
     return;
   }
 
-  panel.classList.remove("hidden");
-  document.querySelector(".chat-app")?.classList.add("has-sources");
   if (emptyEl) emptyEl.classList.add("hidden");
 
   sources.forEach((s, idx) => {
@@ -984,12 +1035,21 @@ function renderSources(run) {
 }
 
 function hideSourcesPanel() {
-  document.getElementById("sources-panel")?.classList.add("hidden");
+  document.getElementById("right-panel")?.classList.add("hidden");
   document.querySelector(".chat-app")?.classList.remove("has-sources");
   const list = document.getElementById("sources-list");
   if (list) list.innerHTML = "";
   const countEl = document.getElementById("sources-count");
   if (countEl) countEl.textContent = "(0)";
+  const fold = document.getElementById("resources-fold");
+  if (fold) {
+    fold.open = false;
+    delete fold.dataset.userToggled;
+  }
+  const agents = document.getElementById("agent-chat");
+  if (agents) agents.innerHTML = "";
+  const prompt = document.getElementById("user-prompt");
+  if (prompt) prompt.innerHTML = "";
 }
 
 const EXEC_LOG_STEPS = {
@@ -1000,6 +1060,7 @@ const EXEC_LOG_STEPS = {
     { node: "writer", label: "Drafting report..." },
     { node: "source_guard", label: "Verifying citations..." },
     { node: "critic", label: "Checking quality..." },
+    { node: "fixer", label: "Fixing agent failure..." },
     { node: "human_approve", label: "Waiting for your review..." },
     { node: "deliver", label: "Delivering answer..." },
   ],
@@ -1011,6 +1072,7 @@ const EXEC_LOG_STEPS = {
     { node: "technical_agent", label: "Drafting technical reply..." },
     { node: "billing_agent", label: "Drafting billing reply..." },
     { node: "quality_critic", label: "Verifying reply quality..." },
+    { node: "fixer", label: "Fixing agent failure..." },
     { node: "human_escalate", label: "Waiting for your review..." },
     { node: "deliver", label: "Sending reply..." },
   ],
@@ -1037,6 +1099,9 @@ function renderLiveLog(run) {
     // Always show steps once anything has started, but hide specialist branches
     // that never ran (support FAQ vs billing etc.).
     if (["faq_agent", "technical_agent", "billing_agent"].includes(step.node)) {
+      return touched.has(step.node);
+    }
+    if (step.node === "fixer") {
       return touched.has(step.node);
     }
     if (step.node === "human_approve" || step.node === "human_escalate") {
@@ -1120,6 +1185,7 @@ async function selectRun(runId) {
   document.getElementById("detail-meta").textContent =
     `${revisions}id ${run.run_id} · step ${run.step} · updated ${fmtTime(run.updated_at)}`;
 
+  renderUserPrompt(run);
   renderSimpleProgress(run);
   renderLiveLog(run);
   renderAgentFeed(run);
@@ -1204,21 +1270,78 @@ function showEmptyState(show) {
     document.getElementById("paused-banner")?.classList.add("hidden");
     const chat = document.getElementById("agent-chat");
     if (chat) chat.innerHTML = "";
+    const prompt = document.getElementById("user-prompt");
+    if (prompt) prompt.innerHTML = "";
+    // New task / landing always starts at workflow picker.
+    resetWorkflowPicker();
+  } else {
+    document.getElementById("start-form")?.classList.remove("composer-awaiting");
   }
 }
 
-document.getElementById("suggestion-chips")?.addEventListener("click", (e) => {
-  const chip = e.target.closest("[data-suggest]");
-  if (!chip || !composerInput) return;
-  // Chips are research prompts — make sure the research workflow is active.
-  const pipelineSel = document.getElementById("pipeline");
-  if (pipelineSel && pipelineSel.value !== "research_report") {
-    pipelineSel.value = "research_report";
-    syncPipelineForm();
+function resetWorkflowPicker() {
+  selectedWorkflow = null;
+  document.getElementById("workflow-picker")?.classList.remove("hidden");
+  document.getElementById("compose-hero")?.classList.add("hidden");
+  document.getElementById("start-form")?.classList.add("composer-awaiting");
+  document.querySelector(".composer-pipeline-wrap")?.classList.remove("hidden");
+  document.querySelectorAll(".workflow-card").forEach((btn) => btn.classList.remove("selected"));
+  if (composerInput) {
+    composerInput.value = "";
+    composerInput.style.height = "";
   }
-  composerInput.value = chip.getAttribute("data-suggest");
-  composerInput.dispatchEvent(new Event("input"));
-  composerInput.focus();
+}
+
+function selectWorkflow(workflowId) {
+  const sel = document.getElementById("pipeline");
+  if (!sel) return;
+  selectedWorkflow = workflowId;
+  if ([...sel.options].some((o) => o.value === workflowId)) {
+    sel.value = workflowId;
+  }
+  syncPipelineForm();
+
+  document.getElementById("workflow-picker")?.classList.add("hidden");
+  document.getElementById("compose-hero")?.classList.remove("hidden");
+  document.getElementById("start-form")?.classList.remove("composer-awaiting");
+
+  document.querySelectorAll(".workflow-card").forEach((btn) => {
+    btn.classList.toggle("selected", btn.dataset.workflow === workflowId);
+  });
+
+  const isSupport = workflowId === "support_resolution";
+  // Workflow already chosen on the picker — hide the redundant select.
+  document.querySelector(".composer-pipeline-wrap")?.classList.add("hidden");
+
+  const desc = document.getElementById("compose-hero-desc");
+  const detailTitle = document.getElementById("detail-title");
+  const kicker = document.getElementById("detail-kicker");
+  if (isSupport) {
+    if (desc)
+      desc.textContent =
+        "Describe the customer issue — agents will draft a policy-aware reply.";
+    if (detailTitle) detailTitle.textContent = "Customer support ticket";
+    if (kicker) kicker.textContent = "Support workflow";
+  } else {
+    if (desc) desc.textContent = "Ask anything for a detailed report at one place.";
+    if (detailTitle) detailTitle.textContent = "Research report";
+    if (kicker) kicker.textContent = "Research workflow";
+  }
+
+  composerInput?.focus();
+}
+
+document.getElementById("workflow-picker")?.addEventListener("click", (e) => {
+  const card = e.target.closest("[data-workflow]");
+  if (!card) return;
+  selectWorkflow(card.getAttribute("data-workflow"));
+});
+
+document.getElementById("change-workflow-btn")?.addEventListener("click", () => {
+  resetWorkflowPicker();
+  document.getElementById("detail-title").textContent = "Ready when you are.";
+  document.getElementById("detail-kicker").textContent = "New task";
+  document.querySelector(".composer-pipeline-wrap")?.classList.remove("hidden");
 });
 
 document.getElementById("live-log-copy")?.addEventListener("click", async () => {
@@ -1235,7 +1358,9 @@ document.getElementById("live-log-copy")?.addEventListener("click", async () => 
   }, 1000);
 });
 
-document.getElementById("sources-copy-btn")?.addEventListener("click", async () => {
+document.getElementById("sources-copy-btn")?.addEventListener("click", async (e) => {
+  e.preventDefault();
+  e.stopPropagation();
   const links = [...document.querySelectorAll("#sources-list .source-link")]
     .map((a, i) => `${i + 1}. ${a.querySelector(".source-title")?.textContent || ""} — ${a.href}`)
     .join("\n");
@@ -1249,8 +1374,14 @@ document.getElementById("sources-copy-btn")?.addEventListener("click", async () 
   }, 1000);
 });
 
+document.getElementById("resources-fold")?.addEventListener("toggle", (e) => {
+  const fold = e.currentTarget;
+  if (fold instanceof HTMLDetailsElement) fold.dataset.userToggled = "1";
+});
+
 document.getElementById("new-task-btn")?.addEventListener("click", () => {
   selectedRunId = null;
+  agentCardOpenPrefs.clear();
   if (pollTimer) clearInterval(pollTimer);
   lastStatus = null;
   document.getElementById("detail-title").textContent = "Ready when you are.";
@@ -1260,7 +1391,6 @@ document.getElementById("new-task-btn")?.addEventListener("click", () => {
   pill.className = "pill";
   showEmptyState(true);
   refreshRuns().catch(() => {});
-  composerInput?.focus();
 });
 
 function syncPipelineForm() {

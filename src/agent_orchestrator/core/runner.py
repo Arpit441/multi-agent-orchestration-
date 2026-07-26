@@ -381,16 +381,24 @@ class GraphRunner:
                 await self.store.save_run(run)
                 return run
             except NodeExecutionError as exc:
-                fallback = self.graph.fallback_target(node_name)
-                if fallback:
-                    run.current_node = fallback
-                    run.error = f"Node '{node_name}' failed after retries; fallback to '{fallback}': {exc}"
+                recovered = await self._try_fixer_recovery(run, node_name, exc)
+                if recovered:
+                    # Fixer patched the failure and the original node succeeded on retry.
+                    pass
+                else:
+                    fallback = self.graph.fallback_target(node_name)
+                    if fallback:
+                        run.current_node = fallback
+                        run.error = (
+                            f"Node '{node_name}' failed after retries; "
+                            f"fallback to '{fallback}': {exc}"
+                        )
+                        await self.store.save_run(run)
+                        continue
+                    self._set_status(run, RunStatus.FAILED)
+                    run.error = str(exc)
                     await self.store.save_run(run)
-                    continue
-                self._set_status(run, RunStatus.FAILED)
-                run.error = str(exc)
-                await self.store.save_run(run)
-                return run
+                    return run
 
             # Success path — evaluate edges / terminals.
             if node_name in self.graph.terminal_nodes:
@@ -422,6 +430,61 @@ class GraphRunner:
             self._set_status(run, RunStatus.COMPLETED)
             await self.store.save_run(run)
         return run
+
+    async def _try_fixer_recovery(
+        self, run: RunRecord, failed_node: str, exc: Exception
+    ) -> bool:
+        """If a 'fixer' agent exists, ask it to diagnose the error and retry once."""
+        if failed_node == "fixer" or "fixer" not in self.graph.nodes:
+            return False
+
+        used = run.state.get("fixer_used_for") or []
+        if not isinstance(used, list):
+            used = []
+        if failed_node in used:
+            return False
+
+        used = [*used, failed_node]
+        run.state.set("fixer_used_for", used)
+        run.state.set("failed_node", failed_node)
+        run.state.set("failure_error", str(exc))
+        run.state.set(
+            "recovery_notes",
+            "",
+        )
+        await self.store.save_run(run)
+
+        fixer = self.graph.nodes["fixer"]
+        previous = run.current_node
+        run.current_node = "fixer"
+        try:
+            run.state = await self._execute_node(
+                run, fixer.instance, fixer.retry_policy
+            )
+        except Exception:  # noqa: BLE001 — fixer itself failed; give up recovery
+            run.current_node = previous
+            return False
+
+        # Retry the original node once with the fixer's recovery notes in state.
+        run.current_node = failed_node
+        original = self.graph.nodes[failed_node]
+        from agent_orchestrator.core.policies import RetryPolicy
+
+        one_shot = RetryPolicy(
+            max_attempts=1,
+            timeout_seconds=original.retry_policy.timeout_seconds,
+        )
+        try:
+            run.state = await self._execute_node(
+                run, original.instance, one_shot
+            )
+            run.state.set("recovery_applied", True)
+            run.error = None
+            await self.store.save_run(run)
+            return True
+        except Exception:  # noqa: BLE001
+            run.current_node = failed_node
+            return False
 
     async def _fan_out(self, run: RunRecord, node_names: list[str]) -> str | None:
         """Execute parallel branches, merge state, return join successor if any."""

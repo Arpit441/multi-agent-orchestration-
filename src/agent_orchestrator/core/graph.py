@@ -213,6 +213,8 @@ class GraphBuilder:
         # Fallback-only targets may be unreachable via normal edges — allow them.
         fallback_targets = {e.target for e in self._edges if e.is_fallback}
         unreachable -= fallback_targets
+        # Recovery agent is invoked by the runner on failure, not via happy-path edges.
+        unreachable.discard("fixer")
         if unreachable:
             raise GraphValidationError(
                 f"Unreachable nodes from entry '{self._entry}': {sorted(unreachable)}"

@@ -149,6 +149,7 @@ def build_research_report_graph() -> Graph:
             "user_template": (
                 "Topic: {topic}\n\n"
                 "Organisation knowledge (may be empty):\n{knowledge_context}\n\n"
+                "RECOVERY NOTES FROM FIXER (follow if present):\n{recovery_notes}\n\n"
                 "Create the research brief and focused web search queries. Return JSON only."
             ),
             "output_key": "research_plan",
@@ -201,6 +202,7 @@ def build_research_report_graph() -> Graph:
                 "Organisation knowledge (uploaded docs):\n{knowledge_context}\n\n"
                 "Verified web sources (the only URLs you may cite):\n{sources_markdown}\n\n"
                 "Other revision notes:\n{feedback}\n\n"
+                "RECOVERY NOTES FROM FIXER (follow if present):\n{recovery_notes}\n\n"
                 "Write the full updated report in markdown. If a human revision request is "
                 "present, start from the previous draft and apply those changes explicitly."
             ),
@@ -230,6 +232,7 @@ def build_research_report_graph() -> Graph:
             "user_template": (
                 "Topic: {topic}\n\nReport:\n{report}\n\n"
                 "Organisation knowledge:\n{knowledge_context}\n\n"
+                "RECOVERY NOTES FROM FIXER (follow if present):\n{recovery_notes}\n\n"
                 "Return JSON only."
             ),
             "output_key": "critic_output",
@@ -252,6 +255,33 @@ def build_research_report_graph() -> Graph:
             "revise_to": "writer",
         },
         retry_policy=RetryPolicy(max_attempts=1, timeout_seconds=None),
+    )
+
+    builder.add_node(
+        "fixer",
+        "llm_agent",
+        config={
+            "system_prompt": (
+                "You are a recovery specialist. Another agent failed. Diagnose the error "
+                "and write concrete recovery notes so that agent can succeed on retry. "
+                "Focus on formatting (valid JSON), missing fields, safer queries, or "
+                "simpler output. Return JSON with keys: recovery_notes (string), "
+                "likely_cause (string)."
+            ),
+            "user_template": (
+                "Failed agent: {failed_node}\n"
+                "Error:\n{failure_error}\n\n"
+                "Topic: {topic}\n"
+                "Current brief:\n{research_brief}\n"
+                "Current feedback:\n{feedback}\n\n"
+                "Return JSON only."
+            ),
+            "output_key": "fixer_output",
+            "json_mode": True,
+            "flatten_keys": ["recovery_notes", "likely_cause"],
+            "temperature": 0.2,
+        },
+        retry_policy=RetryPolicy(max_attempts=2, timeout_seconds=60),
     )
 
     builder.add_node(
@@ -300,6 +330,8 @@ def default_initial_state(topic: str, report_type: str = "general") -> dict:
         "human_feedback": "",
         "previous_draft": "",
         "pending_human_revision": False,
+        "recovery_notes": "",
+        "fixer_used_for": [],
         "research_plan": {},
         "research_brief": "",
         "search_queries": [],

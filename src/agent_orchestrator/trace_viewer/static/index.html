@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=33" />
+  <link rel="stylesheet" href="/static/styles.css?v=39" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
@@ -70,15 +70,43 @@
 
       <div id="thread" class="thread">
         <div id="empty-state" class="empty-state">
-          <h1>Ready when you are.</h1>
-          <p class="muted">Ask for a research report, or switch the workflow to resolve a support ticket. Agents will reply here — thinking first, then passing work to the next agent.</p>
-          <div class="suggestion-chips" id="suggestion-chips">
-            <button type="button" class="chip" data-suggest="Research AI Agents">Research AI Agents</button>
-            <button type="button" class="chip" data-suggest="Compare RAG vs Fine-tuning">Compare RAG vs Fine-tuning</button>
-            <button type="button" class="chip" data-suggest="Summarize PDF">Summarize PDF</button>
-            <button type="button" class="chip" data-suggest="System Design">System Design</button>
+          <div id="workflow-picker" class="workflow-picker">
+            <p class="workflow-eyebrow">Get started</p>
+            <h1>Available workflows</h1>
+            <p class="muted">Pick a workflow to start. Agents will think, hand off work, and deliver an answer.</p>
+            <div class="workflow-cards" role="list">
+              <button type="button" class="workflow-card" data-workflow="research_report" role="listitem">
+                <span class="workflow-card-icon" aria-hidden="true">
+                  <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="8" y="6" width="26" height="34" rx="4" stroke="currentColor" stroke-width="2.2"/>
+                    <path d="M14 16h14M14 22h14M14 28h10" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                    <circle cx="34" cy="34" r="8" fill="currentColor" opacity="0.18"/>
+                    <path d="M34 30v8M30 34h8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                  </svg>
+                </span>
+                <span class="workflow-card-title">Research report</span>
+                <span class="workflow-card-desc">Cited research with quality checks and optional human review.</span>
+              </button>
+              <button type="button" class="workflow-card" data-workflow="support_resolution" role="listitem">
+                <span class="workflow-card-icon" aria-hidden="true">
+                  <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 18a10 10 0 0 1 10-10h8a10 10 0 0 1 10 10v4a10 10 0 0 1-10 10h-4l-8 8v-8h-4A10 10 0 0 1 10 22v-4z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
+                    <path d="M18 20h12M18 26h8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                  </svg>
+                </span>
+                <span class="workflow-card-title">Customer support ticket</span>
+                <span class="workflow-card-desc">Draft a policy-aware reply for an inbound support ticket.</span>
+              </button>
+            </div>
+          </div>
+
+          <div id="compose-hero" class="compose-hero hidden">
+            <button type="button" id="change-workflow-btn" class="ghost change-workflow">← Change workflow</button>
+            <p id="compose-hero-desc" class="muted compose-hero-desc">Ask anything for a detailed report at one place.</p>
           </div>
         </div>
+
+        <div id="user-prompt" class="user-prompt"></div>
 
         <ol id="simple-progress" class="simple-progress hidden" aria-label="Progress"></ol>
 
@@ -93,7 +121,7 @@
         <div id="delivered-banner" class="delivered-banner hidden">
           <div>
             <strong>Ready</strong>
-            <p>Delivered — the final answer is at the end of the chat.</p>
+            <p>Delivered — the final answer is below.</p>
           </div>
           <button id="view-final-btn" type="button">View final report</button>
         </div>
@@ -101,12 +129,10 @@
         <div id="paused-banner" class="paused-banner hidden">
           <div>
             <strong>Needs your review</strong>
-            <p>Quality stayed below threshold — decide in the chat below.</p>
+            <p>Quality stayed below threshold — open Agents on the right to decide, or use Review.</p>
           </div>
           <button id="open-modal-btn" type="button">Review &amp; decide</button>
         </div>
-
-        <div id="agent-chat" class="agent-chat"></div>
 
         <section class="answer-section hidden" id="answer-section">
           <div class="answer-header">
@@ -130,14 +156,14 @@
         </details>
       </div>
 
-      <form id="start-form" class="composer">
+      <form id="start-form" class="composer composer-awaiting">
         <div id="support-fields" class="composer-extra hidden">
           <input id="customer-name" value="Priya Sharma" maxlength="120" placeholder="Customer name" />
           <input id="ticket-subject" maxlength="300" placeholder="Ticket subject (e.g. Charged twice for Pro)" />
         </div>
         <div class="composer-bar">
           <div class="composer-selects">
-            <label class="composer-select">
+            <label class="composer-select composer-pipeline-wrap">
               <span class="composer-select-label">Workflow</span>
               <select id="pipeline" name="pipeline" title="Which pipeline to run"></select>
             </label>
@@ -153,13 +179,24 @@
       </form>
     </main>
 
-    <aside id="sources-panel" class="sources-panel hidden" aria-label="Sources">
-      <header class="sources-header">
-        <h3>Sources <span id="sources-count" class="sources-count">(0)</span></h3>
-        <button id="sources-copy-btn" class="ghost sources-copy" type="button" title="Copy sources">⧉</button>
-      </header>
-      <ul id="sources-list" class="sources-list"></ul>
-      <p id="sources-empty" class="muted sources-empty hidden">No web sources for this run yet.</p>
+    <aside id="right-panel" class="right-panel hidden" aria-label="Resources and agents">
+      <details id="resources-fold" class="side-fold">
+        <summary>
+          <span>Resources <span id="sources-count" class="sources-count">(0)</span></span>
+          <button id="sources-copy-btn" class="ghost sources-copy" type="button" title="Copy sources">⧉</button>
+        </summary>
+        <div class="side-fold-body">
+          <ul id="sources-list" class="sources-list"></ul>
+          <p id="sources-empty" class="muted sources-empty">No web sources for this run yet.</p>
+        </div>
+      </details>
+
+      <section class="agents-rail">
+        <header class="agents-rail-header">
+          <h3>Agents</h3>
+        </header>
+        <div id="agent-chat" class="agent-chat"></div>
+      </section>
     </aside>
   </div>
 
@@ -190,6 +227,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=33"></script>
+  <script src="/static/app.js?v=39"></script>
 </body>
 </html>

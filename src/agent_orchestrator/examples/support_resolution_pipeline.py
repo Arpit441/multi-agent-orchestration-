@@ -255,7 +255,8 @@ def build_support_resolution_graph() -> Graph:
         "Preliminary reply: {preliminary_reply}\n"
         "HUMAN REVISION REQUEST (highest priority):\n{human_feedback}\n"
         "Previous draft to revise:\n{previous_draft}\n"
-        "Other revision feedback: {feedback}\n\n"
+        "Other revision feedback: {feedback}\n"
+        "RECOVERY NOTES FROM FIXER (follow if present):\n{recovery_notes}\n\n"
         "Organisation knowledge (uploaded docs):\n{knowledge_context}\n\n"
         "Built-in policy:\n" + SUPPORT_POLICY + "\n\n"
         "Return JSON only. If a human revision request is present, revise the previous "
@@ -354,6 +355,32 @@ def build_support_resolution_graph() -> Graph:
             ],
         },
         retry_policy=RetryPolicy(max_attempts=1, timeout_seconds=None),
+    )
+
+    builder.add_node(
+        "fixer",
+        "llm_agent",
+        config={
+            "system_prompt": (
+                "You are a recovery specialist for support agents. Another agent failed. "
+                "Diagnose the error and write concrete recovery notes so that agent can "
+                "succeed on retry (valid JSON, safer claims, simpler reply). "
+                "Return JSON with keys: recovery_notes (string), likely_cause (string)."
+            ),
+            "user_template": (
+                "Failed agent: {failed_node}\n"
+                "Error:\n{failure_error}\n\n"
+                "Subject: {subject}\n"
+                "Message:\n{message}\n"
+                "Draft so far:\n{draft_reply}\n\n"
+                "Return JSON only."
+            ),
+            "output_key": "fixer_output",
+            "json_mode": True,
+            "flatten_keys": ["recovery_notes", "likely_cause"],
+            "temperature": 0.2,
+        },
+        retry_policy=RetryPolicy(max_attempts=2, timeout_seconds=60),
     )
 
     builder.add_node(
@@ -457,6 +484,8 @@ def default_support_state(
         "human_feedback": "",
         "previous_draft": "",
         "pending_human_revision": False,
+        "recovery_notes": "",
+        "fixer_used_for": [],
         "frustrated": False,
         "urgency": "medium",
         "approved": False,
