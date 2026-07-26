@@ -1,6 +1,6 @@
 # Agent Orchestrator
 
-A lightweight **multi-agent orchestration framework** (LangGraph / CrewAI–style) with explicit state, retries, timeouts, human-in-the-loop checkpoints, crash-resumable runs, and a plugin registry for node types.
+A lightweight **graph-based multi-agent orchestration framework** with explicit state, retries, timeouts, human-in-the-loop checkpoints, crash-resumable runs, and a plugin registry for node types. It does not depend on LangGraph or CrewAI.
 
 Built as an **SDE-2 / SDE-3 portfolio project**: the engine is the product; Gemini powers agent nodes; a research-and-report pipeline proves the abstraction end-to-end — including a dashboard that shows agents collaborating.
 
@@ -12,10 +12,11 @@ Built as an **SDE-2 / SDE-3 portfolio project**: the engine is the product; Gemi
 - **Strict run state machine** — illegal transitions are rejected loudly
 - **Per-node retry / timeout** — fixed or exponential backoff; retryable vs non-retryable errors; optional fallback edges
 - **Checkpointing** — full state snapshots in SQLite before/after every node; resume after crash
-- **Human-in-the-loop** — pause API with approve / reject / edit
+- **Adaptive human-in-the-loop** — good outputs deliver automatically; low-scoring outputs auto-revise and pause for approve / reject / revision feedback only after the revision budget is exhausted
+- **Fixer recovery agent** — after normal retries fail, a dedicated agent can repair recoverable node failures and return execution to the graph
 - **Plugin architecture** — `@register_node("…")` without touching the runner
-- **Observability** — structured traces + web dashboard (agent activity, rendered report, execution path)
-- **Reference demo** — Researcher → Web Search → Writer → Critic (loop) → Human Approve → Deliver
+- **Observability** — structured traces + web dashboard with live progress, expandable agent reasoning and intermediate results, sources, and rendered final output
+- **Two workflow demos** — cited research reports and policy-aware customer-support ticket resolution
 
 ---
 
@@ -82,7 +83,12 @@ stateDiagram-v2
 ## Reference pipelines
 
 ### 1. Research report
-Topic → Researcher → Web Search → Writer → Critic (loop) → Human approve → Deliver
+Topic → Knowledge lookup → Researcher → Web Search → Writer → Source guard → Critic.
+
+- Critic score **≥ 7**: deliver automatically
+- Critic score **< 7**: revise automatically, up to three times
+- Still below threshold: pause for human approval or revision feedback
+- Exhausted node retries can invoke the **Fixer agent** before the run fails
 
 ### 2. Customer Support Resolution Network
 Ticket → Frontline (intent) → Sentiment → route to **FAQ / Technical / Billing** specialists → Quality critic → Deliver. If the customer is frustrated or high-risk, **escalate to a human checkpoint** instead.
@@ -103,7 +109,7 @@ flowchart TD
   escalate --> deliver
 ```
 
-Pick the pipeline in the UI dropdown — same engine, two graphs.
+After login, choose **Research report** or **Customer support ticket** from the workflow picker. The selected workflow then opens its tailored chat composer; both workflows run on the same orchestration engine.
 
 
 ---
@@ -171,14 +177,14 @@ Persist the `orchestrator_data` volume so runs survive restarts. Same image work
 
 ## Dashboard (what you demo)
 
-| Tab | Purpose |
-|-----|---------|
-| **Agent activity** | Per-agent cards with outputs + “hands off to” between steps |
-| **Final report** | Markdown-rendered report |
-| **Execution trace** | Attempts, timings, state keys changed |
-| **Raw state** | Full JSON for debugging |
+- **Workflow-first landing page** — select Research Report or Customer Support before entering a prompt
+- **Chat-style execution view** — the user's prompt appears first, followed by live progress and the final answer
+- **Right-side agent rail** — expand any agent card to inspect its reasoning and intermediate result; handoffs show which agent received the work next
+- **Collapsible Resources panel** — web sources remain available without crowding the answer
+- **Human review controls** — approve, reject, or request a revision with written feedback when a run pauses
+- **Run history and durability** — reopen previous runs and resume recoverable interrupted work
 
-When the run is **PAUSED**, the checkpoint panel shows the **critic score** and a **report preview** before you approve.
+When a run is **PAUSED**, the review UI shows the critic score, feedback, and draft preview before the user decides.
 
 ---
 
@@ -279,7 +285,7 @@ agent-orchestrator/
 │   ├── persistence/      # SQLite store (runs, traces, snapshots)
 │   ├── nodes/            # llm_agent, tool, checkpoint
 │   ├── llm/              # Gemini client
-│   ├── examples/         # research_report_pipeline
+│   ├── examples/         # research and support workflow definitions
 │   ├── api/              # FastAPI app + routes
 │   └── trace_viewer/     # dashboard static assets
 ├── tests/
@@ -294,11 +300,13 @@ agent-orchestrator/
 
 ## Interview demo script
 
-1. Start a run from the UI with a concrete topic.
-2. Open **Agent activity** — show Researcher → Search → Writer → Critic handoffs.
-3. When status is **PAUSED**, scroll the report preview, then **Approve**.
-4. Kill the server mid-run, restart, click **Resume crashed run** — continues from the last snapshot.
-5. Point at `@register_node` and the legal transition table in `core/state.py`.
+1. Choose **Research report** or **Customer support ticket** on the workflow landing page.
+2. Enter a concrete topic or ticket and start the run.
+3. Follow live progress, then expand cards in the **Agents** rail to show reasoning, intermediate results, and handoffs.
+4. Open **Resources** to inspect the cited web sources.
+5. For a low-scoring run, show automatic revisions followed by the human checkpoint; request a revision with feedback or approve the draft.
+6. Stop and restart the server during a run, then resume from the persisted checkpoint.
+7. Point at `@register_node`, the Fixer recovery path, and the legal transition table in `core/state.py`.
 
 ### Talking points
 
@@ -312,7 +320,7 @@ agent-orchestrator/
 
 ## Resume one-liner
 
-> Built a LangGraph-style multi-agent orchestrator with durable checkpoints, selective retries, a plugin registry, and a Gemini-powered research-report pipeline with a live collaboration dashboard.
+> Built a graph-based multi-agent orchestrator with durable checkpoints, selective retries, adaptive human review, Fixer-agent recovery, and Gemini-powered research and customer-support workflows with a live collaboration dashboard.
 
 ---
 
