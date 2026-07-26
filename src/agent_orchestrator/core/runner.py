@@ -126,19 +126,29 @@ class InMemoryStore(PersistenceStore):
 
     async def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         runs = sorted(self.runs.values(), key=lambda r: r.created_at, reverse=True)
-        return [
-            {
-                "run_id": r.run_id,
-                "graph_name": r.graph_name,
-                "status": r.status.value,
-                "current_node": r.current_node,
-                "error": r.error,
-                "created_at": r.created_at,
-                "updated_at": r.updated_at,
-                "step": r.step,
-            }
-            for r in runs[:limit]
-        ]
+        out: list[dict[str, Any]] = []
+        for r in runs[:limit]:
+            state = r.state.data if r.state else {}
+            topic = (state.get("topic") or state.get("subject") or "").strip()
+            out.append(
+                {
+                    "run_id": r.run_id,
+                    "graph_name": r.graph_name,
+                    "status": r.status.value,
+                    "current_node": r.current_node,
+                    "error": r.error,
+                    "created_at": r.created_at,
+                    "updated_at": r.updated_at,
+                    "step": r.step,
+                    "title": topic or "Untitled task",
+                    "graph_label": (
+                        "Support"
+                        if r.graph_name == "support_resolution"
+                        else "Research"
+                    ),
+                }
+            )
+        return out
 
     async def get_idempotency(self, key: str) -> dict[str, str] | None:
         return self.idempotency.get(key)

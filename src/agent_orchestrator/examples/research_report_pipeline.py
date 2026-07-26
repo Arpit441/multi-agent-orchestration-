@@ -69,6 +69,10 @@ def report_type_instructions(report_type: str) -> str:
     return REPORT_TYPES.get(report_type, REPORT_TYPES["general"])["instructions"]
 
 
+CRITIC_SCORE_THRESHOLD = 7
+MAX_AUTO_REVISIONS = 3
+
+
 def _revision_count(state: State) -> int:
     try:
         return int(state.get("revision_count") or 0)
@@ -76,10 +80,24 @@ def _revision_count(state: State) -> int:
         return 0
 
 
-def _critic_approved(state: State) -> bool:
-    # Cap revision loops so a harsh critic cannot spin forever.
-    if _revision_count(state) >= 3:
-        return True
+def _critic_score(state: State) -> float | None:
+    raw = state.get("score")
+    critic = state.get("critic_output")
+    if raw is None and isinstance(critic, dict):
+        raw = critic.get("score")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _critic_passes(state: State) -> bool:
+    """Quality gate: score >= threshold (fallback to approved boolean)."""
+    score = _critic_score(state)
+    if score is not None:
+        return score >= CRITIC_SCORE_THRESHOLD
     approved = state.get("approved")
     if isinstance(approved, bool):
         return approved
@@ -91,15 +109,21 @@ def _critic_approved(state: State) -> bool:
     return False
 
 
-def _critic_rejected(state: State) -> bool:
-    return not _critic_approved(state)
+def _needs_auto_revise(state: State) -> bool:
+    return (not _critic_passes(state)) and _revision_count(state) < MAX_AUTO_REVISIONS
+
+
+def _needs_human_review(state: State) -> bool:
+    """HITL only when still below threshold after auto-revision budget."""
+    return (not _critic_passes(state)) and _revision_count(state) >= MAX_AUTO_REVISIONS
 
 
 def build_research_report_graph() -> Graph:
     """
-    researcher -> web_search -> writer -> critic
-      |-- (approved) --> human_approve --> deliver
-      |-- (rejected) --> writer  (revision loop)
+    researcher -> web_search -> writer -> source_guard -> critic
+      |-- (score >= threshold) --> deliver
+      |-- (below threshold, revisions left) --> writer
+      |-- (below threshold, budget spent) --> human_approve --> deliver
     """
     builder = GraphBuilder("research_report")
 
@@ -201,7 +225,7 @@ def build_research_report_graph() -> Graph:
                 "You are a strict editorial critic. Evaluate the report against: "
                 "clarity, evidence, structure, and actionability. "
                 "Return JSON with keys: approved (boolean), score (0-10), feedback (string). "
-                "Approve only if score >= 7."
+                f"Set approved=true only if score >= {CRITIC_SCORE_THRESHOLD}."
             ),
             "user_template": (
                 "Topic: {topic}\n\nReport:\n{report}\n\n"
@@ -220,7 +244,10 @@ def build_research_report_graph() -> Graph:
         "human_approve",
         "checkpoint",
         config={
-            "message": "Review the final report and approve, reject, or request a revision before delivery.",
+            "message": (
+                "Critic score stayed below the quality threshold after automatic revisions. "
+                "Review the draft, then approve, reject, or request another revision."
+            ),
             "preview_keys": ["topic", "report", "critic_output", "score"],
             "revise_to": "writer",
         },
@@ -242,15 +269,21 @@ def build_research_report_graph() -> Graph:
     builder.add_edge("source_guard", "critic")
     builder.add_edge(
         "critic",
-        "human_approve",
-        condition=_critic_approved,
-        label="approved",
+        "deliver",
+        condition=_critic_passes,
+        label="auto_deliver",
     )
     builder.add_edge(
         "critic",
         "writer",
-        condition=_critic_rejected,
-        label="revise",
+        condition=_needs_auto_revise,
+        label="auto_revise",
+    )
+    builder.add_edge(
+        "critic",
+        "human_approve",
+        condition=_needs_human_review,
+        label="needs_human",
     )
     builder.add_edge("human_approve", "deliver")
     builder.mark_terminal("deliver")

@@ -8,153 +8,118 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=19" />
+  <link rel="stylesheet" href="/static/styles.css?v=33" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-  <div class="page">
-    <header class="hero">
-      <div class="hero-top">
+  <div class="chat-app">
+    <aside class="sidebar">
+      <div class="sidebar-top">
         <p class="brand">Agent Orchestrator</p>
-        <button id="logout-btn" class="ghost" type="button">Log out</button>
+        <button id="new-task-btn" type="button" class="new-task">+ New task</button>
       </div>
-      <h1>One orchestration engine. Multiple real workflows.</h1>
-      <p class="lede">Run a <strong>research report</strong> pipeline or a <strong>Customer Support Resolution Network</strong> (Frontline → Sentiment → FAQ / Technical / Billing → escalate to human when needed). Same retries, checkpoints, and crash-resume under both.</p>
-    </header>
 
-    <section class="panel start-panel">
-      <h2>Start a workflow</h2>
-      <form id="start-form">
-        <div class="field" style="margin-bottom:0.75rem">
-          <label for="pipeline">Pipeline</label>
-          <select id="pipeline" name="pipeline"></select>
-          <p id="pipeline-desc" class="muted" style="margin:0.35rem 0 0"></p>
-        </div>
+      <p class="sidebar-label">History</p>
+      <ul id="run-list" class="run-list"></ul>
 
-        <div id="research-fields" class="form-grid">
-          <div class="field">
-            <label for="topic">What do you want researched?</label>
-            <input id="topic" name="topic" placeholder="e.g. Edge AI market for industrial IoT" maxlength="500" />
-          </div>
-          <div class="field">
-            <label for="report-type">Report type</label>
-            <select id="report-type" name="report-type"></select>
-          </div>
-          <div class="field field-submit">
-            <button type="submit">Run agents</button>
-          </div>
-        </div>
+      <div class="sidebar-panels">
+        <details id="knowledge-panel" class="sidebar-tool hidden">
+          <summary>Knowledge base</summary>
+          <p class="muted">Upload policy / FAQ / tone guides (.txt, .md, .csv, .pdf).</p>
+          <form id="knowledge-form" class="row" style="align-items:center">
+            <input id="knowledge-file" type="file" accept=".txt,.md,.markdown,.csv,.pdf,text/plain" />
+            <button type="submit">Upload</button>
+          </form>
+          <p id="knowledge-status" class="muted"></p>
+          <ul id="knowledge-list" class="knowledge-list"></ul>
+        </details>
 
-        <div id="support-fields" class="support-form hidden">
-          <p class="muted" style="margin-top:0">Manual ticket entry. Tickets from the connected Zendesk are handled in the <strong>Connect external apps</strong> panel below — hit <em>Resolve</em> next to an inbound ticket there.</p>
-          <div class="form-grid support-grid">
-            <div class="field">
-              <label for="customer-name">Customer name</label>
-              <input id="customer-name" value="Priya Sharma" maxlength="120" />
-            </div>
-            <div class="field">
-              <label for="ticket-subject">Subject</label>
-              <input id="ticket-subject" placeholder="Charged twice for Pro" maxlength="300" />
-            </div>
-          </div>
-          <div class="field" style="margin-top:0.75rem">
-            <label for="ticket-message">Ticket message</label>
-            <textarea id="ticket-message" rows="4" placeholder="I've been charged twice for my Pro plan this month. Order #48291. This is the third time — I'm really frustrated." maxlength="5000"></textarea>
-          </div>
-          <div class="row" style="margin-top:0.75rem; justify-content:flex-end">
-            <button type="submit">Resolve ticket</button>
-          </div>
-        </div>
-      </form>
-    </section>
-
-    <section class="panel start-panel hidden" id="knowledge-panel">
-      <h2>Organisation knowledge base</h2>
-      <p class="muted" style="margin-top:0">Upload policy / FAQ / tone guides (.txt, .md, .csv, .pdf). Specialists retrieve relevant chunks before drafting; the quality critic checks replies against them.</p>
-      <form id="knowledge-form" class="row" style="align-items:center; margin-top:0.75rem">
-        <input id="knowledge-file" type="file" accept=".txt,.md,.markdown,.csv,.pdf,text/plain" />
-        <button type="submit">Upload</button>
-      </form>
-      <p id="knowledge-status" class="muted" style="margin:0.5rem 0 0"></p>
-      <ul id="knowledge-list" class="knowledge-list"></ul>
-    </section>
-
-    <section class="panel start-panel hidden" id="integrations-panel">
-      <h2>Connect external apps</h2>
-      <p class="muted" style="margin-top:0">Simulated Zendesk connector — same inbound ticket → agents → approve → outbound reply flow as a real integration, without needing a Zendesk account.</p>
-      <div class="integration-card">
-        <div class="integration-head">
-          <div>
-            <strong>Zendesk</strong>
+        <details id="integrations-panel" class="sidebar-tool hidden">
+          <summary>Zendesk (simulated)</summary>
+          <div class="integration-head">
             <span id="zd-badge" class="pill">disconnected</span>
+            <div class="row">
+              <button id="zd-connect-btn" type="button">Connect</button>
+              <button id="zd-disconnect-btn" type="button" class="ghost hidden">Disconnect</button>
+            </div>
           </div>
-          <div class="row">
-            <button id="zd-connect-btn" type="button">Connect Zendesk</button>
-            <button id="zd-disconnect-btn" type="button" class="ghost hidden">Disconnect</button>
+          <p id="zd-status" class="muted"></p>
+          <div id="zd-connected-block" class="hidden">
+            <div class="row" style="justify-content:space-between; align-items:center">
+              <strong>Inbound tickets</strong>
+              <button id="zd-refresh-btn" type="button" class="ghost">Refresh</button>
+            </div>
+            <ul id="zd-ticket-list" class="knowledge-list"></ul>
+            <strong>Outbound deliveries</strong>
+            <ul id="zd-delivery-list" class="knowledge-list"></ul>
           </div>
-        </div>
-        <p id="zd-status" class="muted" style="margin:0.5rem 0 0"></p>
-        <div id="zd-connected-block" class="hidden" style="margin-top:0.85rem">
-          <div class="row" style="justify-content:space-between; align-items:center">
-            <h3 style="margin:0">Inbound tickets</h3>
-            <button id="zd-refresh-btn" type="button" class="ghost">Refresh</button>
-          </div>
-          <ul id="zd-ticket-list" class="knowledge-list"></ul>
-          <h3 style="margin-top:1rem">Outbound delivery log</h3>
-          <ul id="zd-delivery-list" class="knowledge-list"></ul>
-        </div>
+        </details>
       </div>
-    </section>
 
-    <section class="layout">
-      <aside class="panel">
-        <h2>Runs</h2>
-        <ul id="run-list" class="run-list"></ul>
-      </aside>
+      <button id="logout-btn" class="ghost sidebar-logout" type="button">Log out</button>
+    </aside>
 
-      <main class="panel detail">
-        <div class="detail-header">
-          <div>
-            <p class="detail-kicker" id="detail-kicker">Select a run</p>
-            <h2 id="detail-title">Your result will appear here</h2>
+    <main class="chat-main">
+      <header class="chat-topbar">
+        <div>
+          <p class="detail-kicker" id="detail-kicker">New task</p>
+          <h2 id="detail-title">Ready when you are.</h2>
+        </div>
+        <span id="status-pill" class="pill">—</span>
+      </header>
+
+      <div id="thread" class="thread">
+        <div id="empty-state" class="empty-state">
+          <h1>Ready when you are.</h1>
+          <p class="muted">Ask for a research report, or switch the workflow to resolve a support ticket. Agents will reply here — thinking first, then passing work to the next agent.</p>
+          <div class="suggestion-chips" id="suggestion-chips">
+            <button type="button" class="chip" data-suggest="Research AI Agents">Research AI Agents</button>
+            <button type="button" class="chip" data-suggest="Compare RAG vs Fine-tuning">Compare RAG vs Fine-tuning</button>
+            <button type="button" class="chip" data-suggest="Summarize PDF">Summarize PDF</button>
+            <button type="button" class="chip" data-suggest="System Design">System Design</button>
           </div>
-          <span id="status-pill" class="pill">—</span>
         </div>
 
-        <ol id="simple-progress" class="simple-progress" aria-label="Progress"></ol>
+        <ol id="simple-progress" class="simple-progress hidden" aria-label="Progress"></ol>
+
+        <section id="live-log" class="live-log hidden" aria-label="Live execution log">
+          <header class="live-log-header">
+            <h3>Live execution</h3>
+            <button id="live-log-copy" class="ghost" type="button" title="Copy log">⧉</button>
+          </header>
+          <ul id="live-log-list" class="live-log-list"></ul>
+        </section>
 
         <div id="delivered-banner" class="delivered-banner hidden">
           <div>
             <strong>Ready</strong>
-            <p>Approved and delivered. Your answer is below.</p>
+            <p>Delivered — the final answer is at the end of the chat.</p>
           </div>
+          <button id="view-final-btn" type="button">View final report</button>
         </div>
 
         <div id="paused-banner" class="paused-banner hidden">
           <div>
             <strong>Needs your review</strong>
-            <p>Check the draft, then approve, revise, or reject.</p>
+            <p>Quality stayed below threshold — decide in the chat below.</p>
           </div>
           <button id="open-modal-btn" type="button">Review &amp; decide</button>
         </div>
 
-        <section class="answer-section">
+        <div id="agent-chat" class="agent-chat"></div>
+
+        <section class="answer-section hidden" id="answer-section">
           <div class="answer-header">
-            <h3>Answer</h3>
+            <h3>Final answer</h3>
             <div class="report-toolbar">
               <button id="download-md-btn" type="button" class="ghost" disabled>Download</button>
               <button id="print-btn" type="button" class="ghost" disabled>Print</button>
             </div>
           </div>
-          <div id="report-view" class="report empty">Start a workflow to see the answer here.</div>
+          <div id="report-view" class="report empty">The final report appears here when ready.</div>
         </section>
 
-        <details class="process-panel" id="process-panel">
-          <summary>How we got here</summary>
-          <div id="agent-feed" class="agent-feed"></div>
-        </details>
-
-        <details class="tech-panel" id="tech-panel">
+        <details class="tech-panel hidden" id="tech-panel">
           <summary>Technical details</summary>
           <p id="detail-meta" class="meta"></p>
           <div id="graph-path" class="graph-path hidden" aria-hidden="true"></div>
@@ -163,11 +128,42 @@
           <h4 class="tech-subhead">Raw state</h4>
           <pre id="state-view" class="code"></pre>
         </details>
-      </main>
-    </section>
+      </div>
+
+      <form id="start-form" class="composer">
+        <div id="support-fields" class="composer-extra hidden">
+          <input id="customer-name" value="Priya Sharma" maxlength="120" placeholder="Customer name" />
+          <input id="ticket-subject" maxlength="300" placeholder="Ticket subject (e.g. Charged twice for Pro)" />
+        </div>
+        <div class="composer-bar">
+          <div class="composer-selects">
+            <label class="composer-select">
+              <span class="composer-select-label">Workflow</span>
+              <select id="pipeline" name="pipeline" title="Which pipeline to run"></select>
+            </label>
+            <label class="composer-select" id="report-type-wrap">
+              <span class="composer-select-label">Report type</span>
+              <select id="report-type" name="report-type" title="Report format"></select>
+            </label>
+          </div>
+          <textarea id="composer-input" rows="3" placeholder="Ask anything — e.g. Edge AI market for industrial IoT" maxlength="5000"></textarea>
+          <button type="submit" class="send-btn" title="Run agents">➤</button>
+        </div>
+        <p id="pipeline-desc" class="muted composer-hint"></p>
+      </form>
+    </main>
+
+    <aside id="sources-panel" class="sources-panel hidden" aria-label="Sources">
+      <header class="sources-header">
+        <h3>Sources <span id="sources-count" class="sources-count">(0)</span></h3>
+        <button id="sources-copy-btn" class="ghost sources-copy" type="button" title="Copy sources">⧉</button>
+      </header>
+      <ul id="sources-list" class="sources-list"></ul>
+      <p id="sources-empty" class="muted sources-empty hidden">No web sources for this run yet.</p>
+    </aside>
   </div>
 
-  <!-- Approval modal -->
+  <!-- Approval modal (fallback; primary review happens inline in chat) -->
   <div id="hitl-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="hitl-title">
     <div class="modal-backdrop" data-close-modal></div>
     <div class="modal-card">
@@ -194,6 +190,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20"></script>
+  <script src="/static/app.js?v=33"></script>
 </body>
 </html>

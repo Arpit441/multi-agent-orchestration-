@@ -172,14 +172,30 @@ class SQLiteStore(PersistenceStore):
             rows = conn.execute(
                 """
                 SELECT run_id, graph_name, status, current_node, error,
-                       created_at, updated_at, step
+                       created_at, updated_at, step, state_json
                 FROM runs
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            item = dict(r)
+            state_json = item.pop("state_json", "{}")
+            try:
+                state = json.loads(state_json) if state_json else {}
+            except json.JSONDecodeError:
+                state = {}
+            topic = (state.get("topic") or state.get("subject") or "").strip()
+            item["title"] = topic or "Untitled task"
+            item["graph_label"] = (
+                "Support"
+                if item.get("graph_name") == "support_resolution"
+                else "Research"
+            )
+            out.append(item)
+        return out
 
     async def latest_snapshot(self, run_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:

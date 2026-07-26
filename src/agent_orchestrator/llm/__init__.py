@@ -128,10 +128,95 @@ def extract_json(text: str) -> dict[str, Any]:
             except json.JSONDecodeError as exc:
                 last_error = exc
                 continue
+
+    salvaged = _salvage_json_object(text)
+    if salvaged:
+        return salvaged
+
     raise ValueError(
         f"Could not parse JSON from model response: {text[:200]}"
         + (f" ({last_error})" if last_error else "")
     )
+
+
+_STRING_KEYS = (
+    "thinking",
+    "research_brief",
+    "feedback",
+    "summary",
+    "preliminary_reply",
+    "draft_reply",
+    "intent",
+    "suggested_action",
+    "sentiment_label",
+    "urgency",
+    "reason",
+)
+
+
+def _loose_string_field(text: str, key: str) -> str | None:
+    """Pull a JSON string field even when surrounding JSON is broken."""
+    # "key": " ... until unescaped quote or end of text
+    pattern = re.compile(
+        rf'"{re.escape(key)}"\s*:\s*"((?:[^"\\]|\\.)*)(?:"|$)',
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    raw = match.group(1)
+    try:
+        return json.loads(f'"{raw}"')
+    except json.JSONDecodeError:
+        return (
+            raw.replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace('\\"', '"')
+            .replace("\\\\", "\\")
+        )
+
+
+def _salvage_json_object(text: str) -> dict[str, Any] | None:
+    """Best-effort field extraction when json.loads fails (truncated / bad quotes)."""
+    out: dict[str, Any] = {}
+    for key in _STRING_KEYS:
+        value = _loose_string_field(text, key)
+        if value is not None:
+            out[key] = value
+
+    queries = re.search(r'"search_queries"\s*:\s*(\[[^\]]*\])', text, re.DOTALL)
+    if queries:
+        try:
+            parsed = json.loads(_sanitize_json_control_chars(queries.group(1)))
+            if isinstance(parsed, list):
+                out["search_queries"] = [str(q) for q in parsed]
+        except json.JSONDecodeError:
+            loose = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', queries.group(1))
+            if loose:
+                out["search_queries"] = loose
+
+    score = re.search(r'"score"\s*:\s*(-?\d+(?:\.\d+)?)', text)
+    if score:
+        try:
+            out["score"] = float(score.group(1))
+            if out["score"].is_integer():
+                out["score"] = int(out["score"])
+        except ValueError:
+            pass
+
+    approved = re.search(r'"approved"\s*:\s*(true|false)', text, re.IGNORECASE)
+    if approved:
+        out["approved"] = approved.group(1).lower() == "true"
+
+    escalate = re.search(r'"escalate"\s*:\s*(true|false)', text, re.IGNORECASE)
+    if escalate:
+        out["escalate"] = escalate.group(1).lower() == "true"
+
+    # Need at least one useful field beyond thinking alone.
+    useful = {k for k in out if k != "thinking"}
+    if not useful:
+        return None
+    return out
 
 
 _default_client: GeminiClient | None = None

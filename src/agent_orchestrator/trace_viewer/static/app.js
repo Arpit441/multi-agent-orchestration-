@@ -24,42 +24,62 @@ const PIPELINE_NODES = {
 
 /** Plain-language labels for the default UI. */
 const AGENT_META = {
-  knowledge_lookup: { icon: "1", label: "Search", role: "Look up uploaded documents" },
-  researcher: { icon: "2", label: "Analyze", role: "Plan what to investigate" },
-  web_search: { icon: "1", label: "Search", role: "Find web sources" },
-  writer: { icon: "3", label: "Draft", role: "Write the answer" },
-  source_guard: { icon: "✓", label: "Check sources", role: "Keep only verified links" },
-  critic: { icon: "4", label: "Verify", role: "Score quality and accuracy" },
-  human_approve: { icon: "★", label: "Your review", role: "You approve before delivery" },
-  deliver: { icon: "✓", label: "Finish", role: "Deliver the final answer" },
-  frontline: { icon: "1", label: "Triage", role: "Classify the ticket" },
-  sentiment: { icon: "2", label: "Assess tone", role: "Check urgency and frustration" },
-  faq_agent: { icon: "3", label: "Draft", role: "Answer FAQ-style questions" },
-  technical_agent: { icon: "3", label: "Draft", role: "Diagnose technical issues" },
-  billing_agent: { icon: "3", label: "Draft", role: "Handle billing questions" },
-  quality_critic: { icon: "4", label: "Verify", role: "Check reply quality" },
-  human_escalate: { icon: "★", label: "Your review", role: "You approve before sending" },
+  knowledge_lookup: { icon: "🧠", label: "Knowledge", role: "Look up uploaded documents" },
+  researcher: { icon: "🧠", label: "Research", role: "Plans the investigation" },
+  web_search: { icon: "🔍", label: "Search", role: "Finds sources" },
+  writer: { icon: "✍️", label: "Writer", role: "Drafts the report" },
+  source_guard: { icon: "🛡️", label: "Source guard", role: "Keeps only verified links" },
+  critic: { icon: "✅", label: "Verifier", role: "Scores quality" },
+  human_approve: { icon: "👤", label: "You", role: "Human review (below threshold)" },
+  deliver: { icon: "📦", label: "Deliver", role: "Final answer" },
+  frontline: { icon: "🎫", label: "Frontline", role: "Classifies the ticket" },
+  sentiment: { icon: "💬", label: "Sentiment", role: "Checks urgency and tone" },
+  faq_agent: { icon: "📘", label: "FAQ", role: "Drafts FAQ-style replies" },
+  technical_agent: { icon: "🛠️", label: "Technical", role: "Diagnoses technical issues" },
+  billing_agent: { icon: "💳", label: "Billing", role: "Handles billing questions" },
+  quality_critic: { icon: "✅", label: "Verifier", role: "Checks reply quality" },
+  human_escalate: { icon: "👤", label: "You", role: "Human review before sending" },
+};
+
+const AGENT_TOOLS = {
+  knowledge_lookup: "Knowledge base",
+  researcher: "Web search planning",
+  web_search: "Web search",
+  writer: "Verified sources",
+  source_guard: "URL validation",
+  critic: "Quality rubric",
+  human_approve: "Human review",
+  deliver: "Delivery",
+  frontline: "Ticket context",
+  sentiment: "Sentiment analysis",
+  faq_agent: "Knowledge base",
+  technical_agent: "Knowledge base",
+  billing_agent: "Policy lookup",
+  quality_critic: "Quality rubric",
+  human_escalate: "Human review",
 };
 
 /** High-level progress stages shown to everyone. */
 const USER_STAGES = {
   research_report: [
-    { id: "search", label: "Search", nodes: ["knowledge_lookup", "web_search"] },
-    { id: "analyze", label: "Analyze", nodes: ["researcher"] },
-    { id: "draft", label: "Draft", nodes: ["writer", "source_guard"] },
-    { id: "verify", label: "Verify", nodes: ["critic", "human_approve", "deliver"] },
+    { id: "search", label: "Search", icon: "🔍", nodes: ["knowledge_lookup", "web_search"] },
+    { id: "analyze", label: "Analyze", icon: "🧠", nodes: ["researcher"] },
+    { id: "draft", label: "Draft", icon: "✍️", nodes: ["writer", "source_guard"] },
+    { id: "verify", label: "Verify", icon: "✅", nodes: ["critic", "human_approve", "deliver"] },
   ],
   support_resolution: [
-    { id: "search", label: "Search", nodes: ["knowledge_lookup"] },
-    { id: "analyze", label: "Analyze", nodes: ["frontline", "sentiment"] },
+    { id: "search", label: "Search", icon: "🔍", nodes: ["knowledge_lookup"] },
+    { id: "analyze", label: "Analyze", icon: "🧠", nodes: ["frontline", "sentiment"] },
     {
       id: "draft",
       label: "Draft",
+      icon: "✍️",
       nodes: ["faq_agent", "technical_agent", "billing_agent"],
     },
     {
       id: "verify",
       label: "Verify",
+      icon: "✅",
       nodes: ["quality_critic", "human_escalate", "deliver"],
     },
   ],
@@ -138,6 +158,41 @@ function mdToHtml(md) {
   return `<pre>${esc(md)}</pre>`;
 }
 
+function relativeTime(iso) {
+  if (!iso) return "";
+  try {
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return "";
+    const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+    if (seconds < 45) return "just now";
+    if (seconds < 90) return "1 min ago";
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} mins ago`;
+    if (seconds < 5400) return "1 hour ago";
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+    if (seconds < 172800) return "1 day ago";
+    return `${Math.floor(seconds / 86400)} days ago`;
+  } catch {
+    return "";
+  }
+}
+
+function historyStatusLabel(status) {
+  switch (status) {
+    case "COMPLETED":
+      return { icon: "✓", text: "Completed", cls: "ok" };
+    case "FAILED":
+      return { icon: "✕", text: "Failed", cls: "bad" };
+    case "PAUSED":
+      return { icon: "★", text: "Needs review", cls: "paused" };
+    case "RUNNING":
+    case "RETRYING":
+    case "PENDING":
+      return { icon: "●", text: "Working", cls: "working" };
+    default:
+      return { icon: "•", text: status || "Unknown", cls: "" };
+  }
+}
+
 async function refreshRuns() {
   const data = await api("/api/runs");
   const list = document.getElementById("run-list");
@@ -145,14 +200,41 @@ async function refreshRuns() {
   for (const run of data.runs || []) {
     const li = document.createElement("li");
     if (run.run_id === selectedRunId) li.classList.add("active");
+
+    const title = (run.title || "Untitled task").trim();
+    const when = relativeTime(run.updated_at || run.created_at);
+    const status = historyStatusLabel(run.status);
+
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.innerHTML = `<span class="dot ${run.status}"></span>${esc(
-      (run.run_id || "").slice(0, 8)
-    )}<em>${esc((run.graph_name || "").replace("_", " ").slice(0, 12))} · ${esc(
-      run.status
-    )}</em>`;
-    btn.addEventListener("click", () => selectRun(run.run_id));
+    btn.className = "history-item";
+    btn.innerHTML = `
+      <span class="history-main">
+        <span class="history-title">${esc(title)}</span>
+        <span class="history-meta">${esc(when)}${when ? " · " : ""}${esc(
+      run.graph_label || "Research"
+    )}</span>
+        <span class="history-status ${status.cls}">
+          <span aria-hidden="true">${status.icon}</span> ${esc(status.text)}
+        </span>
+      </span>
+      <span class="history-copy" title="Copy run id" role="button" tabindex="0">⧉</span>
+    `;
+    btn.addEventListener("click", (e) => {
+      const copy = e.target.closest(".history-copy");
+      if (copy) {
+        e.preventDefault();
+        e.stopPropagation();
+        navigator.clipboard.writeText(run.run_id).then(() => {
+          copy.textContent = "✓";
+          setTimeout(() => {
+            copy.textContent = "⧉";
+          }, 1000);
+        });
+        return;
+      }
+      selectRun(run.run_id);
+    });
     li.appendChild(btn);
     list.appendChild(li);
   }
@@ -167,6 +249,32 @@ function stagesFor(run) {
   return USER_STAGES[run.graph_name] || USER_STAGES.research_report;
 }
 
+function stageDurationMs(stageEvents) {
+  return stageEvents.reduce((sum, ev) => sum + (Number(ev.duration_ms) || 0), 0);
+}
+
+function formatStageDuration(ms) {
+  if (!ms || ms <= 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const secs = ms / 1000;
+  if (secs < 60) return `${secs < 10 ? secs.toFixed(1) : Math.round(secs)}s`;
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  return `${m}m ${s}s`;
+}
+
+function scrollToStage(stageId, stages) {
+  const stage = stages.find((s) => s.id === stageId);
+  if (!stage) return;
+  const steps = [...document.querySelectorAll(".agent-step[data-node]")];
+  const target = steps.find((el) => stage.nodes.includes(el.dataset.node));
+  if (!target) return;
+  target.open = true;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.add("flash");
+  setTimeout(() => target.classList.remove("flash"), 1200);
+}
+
 function renderSimpleProgress(run) {
   const el = document.getElementById("simple-progress");
   if (!el) return;
@@ -175,12 +283,13 @@ function renderSimpleProgress(run) {
   const events = run.trace || [];
   const current = run.current_node;
 
-  stages.forEach((stage) => {
+  stages.forEach((stage, idx) => {
     const li = document.createElement("li");
     const stageEvents = events.filter((t) => stage.nodes.includes(t.node_name));
     const hasError = stageEvents.some((t) => t.outcome === "error");
     const touched = stageEvents.length > 0 || stage.nodes.includes(current);
     const isCurrent = stage.nodes.includes(current);
+    const duration = stageDurationMs(stageEvents);
 
     let cls = "todo";
     if (run.status === "COMPLETED") cls = "done";
@@ -188,8 +297,34 @@ function renderSimpleProgress(run) {
     else if (run.status === "PAUSED" && isCurrent) cls = "paused";
     else if (["RUNNING", "RETRYING", "PENDING"].includes(run.status) && isCurrent) cls = "current";
     else if (touched && !isCurrent) cls = "done";
+
+    const durationLabel =
+      cls === "current" && duration <= 0
+        ? "…"
+        : cls === "todo"
+        ? "—"
+        : formatStageDuration(duration);
+
     li.className = cls;
-    li.innerHTML = `<span class="step-dot"></span><span class="step-label">${esc(stage.label)}</span>`;
+    li.dataset.stage = stage.id;
+    li.setAttribute("role", "button");
+    li.tabIndex = 0;
+    li.title = `Jump to ${stage.label}`;
+    li.innerHTML = `
+      <span class="step-icon" aria-hidden="true">${stage.icon || "•"}</span>
+      <span class="step-copy">
+        <span class="step-label">${esc(stage.label)}</span>
+        <span class="step-duration">${esc(durationLabel)}</span>
+      </span>
+      ${idx < stages.length - 1 ? `<span class="step-connector" aria-hidden="true"></span>` : ""}
+    `;
+    li.addEventListener("click", () => scrollToStage(stage.id, stages));
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        scrollToStage(stage.id, stages);
+      }
+    });
     el.appendChild(li);
   });
 }
@@ -342,41 +477,108 @@ function agentContribution(nodeName, ev, state) {
   }
 }
 
+function friendlyStepError(raw) {
+  const msg = String(raw || "");
+  if (!msg) return "";
+  if (/Could not parse JSON/i.test(msg)) {
+    return "This step had trouble formatting its reply. Start a new task to retry.";
+  }
+  if (/Gemini|timeout|rate limit/i.test(msg)) {
+    return "The model hit a temporary error on this step. Start a new task to retry.";
+  }
+  return "Something went wrong on this step. Start a new task to retry.";
+}
+
 function thinkingHtml(nodeName, ev, state) {
   const thoughts = state.agent_thoughts || {};
   const fromState = thoughts[nodeName] || state[`${nodeName}_thinking`] || "";
   const fromOut =
-    (ev.output_snapshot && (ev.output_snapshot[`${nodeName}_thinking`] ||
-      (ev.output_snapshot.agent_thoughts || {})[nodeName])) ||
+    (ev.output_snapshot &&
+      (ev.output_snapshot[`${nodeName}_thinking`] ||
+        (ev.output_snapshot.agent_thoughts || {})[nodeName])) ||
     "";
-  const text = fromOut || fromState;
-  if (ev.outcome === "running" || (!text && ev.outcome === "running")) {
-    return `
-      <div class="thinking-block live" data-thinking-live="1">
-        <div class="thinking-label"><span class="thinking-pulse"></span> Working</div>
-        <p class="thinking-text">Preparing this step…</p>
-      </div>`;
+  const text = (fromOut || fromState || "").trim();
+  if (ev.outcome === "running" && !text) {
+    return `<p class="thinking-text muted">Working on this step…</p>`;
   }
   if (!text) return "";
+  return `<p class="thinking-text">${esc(text)}</p>`;
+}
+
+function midResultHtml(contrib, nodeName) {
+  if (!contrib || !contrib.body) return "";
+  let bodyHtml = "";
+  if (contrib.kind === "markdown") bodyHtml = `<div class="report">${mdToHtml(contrib.body)}</div>`;
+  else if (contrib.kind === "html") bodyHtml = contrib.body;
+  else bodyHtml = `<p>${esc(contrib.body)}</p>`;
+  const label =
+    nodeName === "deliver" ? "Final result" : "Mid result (passed to next agent)";
+  // Collapsed by default — user toggles open if they want the artifact.
   return `
-    <details class="thinking-block">
-      <summary class="thinking-label">Reasoning</summary>
-      <p class="thinking-text">${esc(text)}</p>
+    <details class="mid-result">
+      <summary>${esc(label)}</summary>
+      <div class="mid-result-body">${bodyHtml}</div>
     </details>`;
 }
 
+function handoffHtml(fromNode, toNode) {
+  const to = AGENT_META[toNode] || { label: toNode || "next" };
+  const from = AGENT_META[fromNode] || { label: fromNode || "agent" };
+  return `<div class="handoff"><span>Passing from ${esc(from.label)} → ${esc(to.label)}</span></div>`;
+}
+
+function inlineHitlHtml(run) {
+  const state = run.state || {};
+  const score = state.score ?? (state.critic_output || {}).score;
+  const feedback = state.feedback || (state.critic_output || {}).feedback || "";
+  const scoreBit = score != null ? `Critic score: <strong>${esc(score)}/10</strong> (below threshold). ` : "";
+  return `
+    <div class="chat-hitl" data-inline-hitl="1">
+      <p class="chat-hitl-title">Your review needed</p>
+      <p class="muted">${scoreBit}Automatic revisions ran out — decide here or use the buttons below.</p>
+      ${feedback ? `<p class="feedback">${esc(feedback)}</p>` : ""}
+      <details class="mid-result" open>
+        <summary>Draft to review</summary>
+        <div class="mid-result-body report">${mdToHtml(
+          state.report || state.draft_reply || ""
+        )}</div>
+      </details>
+      <textarea class="chat-hitl-comment" id="chat-hitl-comment" placeholder="Required for Request revision…"></textarea>
+      <div class="row modal-actions">
+        <button type="button" class="ok" data-chat-hitl="approve">Approve &amp; deliver</button>
+        <button type="button" class="revise" data-chat-hitl="revise">Request revision</button>
+        <button type="button" class="danger" data-chat-hitl="reject">Reject</button>
+      </div>
+    </div>`;
+}
+
+function userBubbleHtml(run) {
+  const state = run.state || {};
+  const isSupport = run.graph_name === "support_resolution";
+  const text = isSupport
+    ? `${state.subject || ""}\n\n${state.message || ""}`.trim()
+    : state.topic || "";
+  if (!text) return "";
+  return `
+    <div class="user-bubble">
+      <div class="user-bubble-inner">${mdToHtml(esc(text))}</div>
+    </div>`;
+}
+
 function renderAgentFeed(run) {
-  const el = document.getElementById("agent-feed");
-  el.innerHTML = "";
+  const el = document.getElementById("agent-chat") || document.getElementById("agent-feed");
+  if (!el) return;
+  el.innerHTML = userBubbleHtml(run);
   const state = run.state || {};
   const events = run.trace || [];
+  const nodeOrder = PIPELINE_NODES[run.graph_name] || [];
 
   if (!events.length && !["RUNNING", "RETRYING", "PENDING"].includes(run.status)) {
-    el.innerHTML = `<p class="muted">Waiting for the first agent to start…</p>`;
+    el.innerHTML += `<p class="muted chat-empty">Waiting for the first agent to start…</p>`;
     return;
   }
   if (!events.length) {
-    el.innerHTML = `
+    el.innerHTML += `
       <div class="agent-card running">
         <div class="agent-avatar">…</div>
         <div class="agent-body">
@@ -395,75 +597,132 @@ function renderAgentFeed(run) {
 
   events.forEach((ev, idx) => {
     const meta = AGENT_META[ev.node_name] || { icon: "?", label: ev.node_name, role: "" };
-    const card = document.createElement("div");
-    card.className = `agent-card ${ev.outcome}`;
+    const isLast = idx === events.length - 1;
+    const details = document.createElement("details");
+    details.className = `agent-step ${ev.outcome}`;
+    details.dataset.node = ev.node_name;
+    // Expand the active/last step and anything paused or errored; collapse finished steps.
+    details.open =
+      ev.outcome === "running" ||
+      ev.outcome === "paused" ||
+      ev.outcome === "error" ||
+      (isLast && run.status !== "COMPLETED");
 
-    const ms = ev.duration_ms != null ? `${Math.round(ev.duration_ms)} ms` : "";
+    const durationText =
+      ev.duration_ms != null
+        ? ev.duration_ms < 1000
+          ? `${Math.round(ev.duration_ms)} ms`
+          : `${(ev.duration_ms / 1000).toFixed(1)}s`
+        : "—";
     const statusText =
       ev.outcome === "error"
-        ? "failed"
+        ? "Failed"
         : ev.outcome === "paused"
-        ? "waiting for you"
+        ? "Waiting for you"
         : ev.outcome === "running"
-        ? "working"
-        : "done";
+        ? "Thinking…"
+        : "Completed";
+    const toolText = AGENT_TOOLS[ev.node_name] || meta.role || "None";
 
     const isToolish = ["web_search", "knowledge_lookup", "source_guard", "deliver"].includes(
       ev.node_name
     );
     const think =
-      isToolish || ev.outcome === "paused"
-        ? ""
-        : thinkingHtml(ev.node_name, ev, state);
+      isToolish || ev.outcome === "paused" ? "" : thinkingHtml(ev.node_name, ev, state);
 
     const contrib = agentContribution(ev.node_name, ev, state);
-    let bodyHtml = "";
-    if (ev.outcome !== "running" && contrib.body) {
-      if (contrib.kind === "markdown") bodyHtml = `<div class="report">${mdToHtml(contrib.body)}</div>`;
-      else if (contrib.kind === "html") bodyHtml = contrib.body;
-      else bodyHtml = `<p>${esc(contrib.body)}</p>`;
+    const showMid =
+      ev.outcome !== "running" &&
+      contrib.body &&
+      !["human_approve", "human_escalate"].includes(ev.node_name);
+    let midHtml = showMid ? midResultHtml(contrib, ev.node_name) : "";
+    if (ev.node_name === "deliver" && contrib.body) {
+      midHtml = `
+        <details class="mid-result" open>
+          <summary>Final result</summary>
+          <div class="mid-result-body"><div class="report">${
+            contrib.kind === "markdown" ? mdToHtml(contrib.body) : esc(contrib.body)
+          }</div></div>
+        </details>`;
     }
 
-    const techBits = [
-      ev.node_name,
-      ms ? ms : "",
-      ev.attempt > 1 ? `retry ${ev.attempt}` : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
+    let hitl = "";
+    if (
+      ev.outcome === "paused" &&
+      ["human_approve", "human_escalate"].includes(ev.node_name) &&
+      run.status === "PAUSED"
+    ) {
+      hitl = inlineHitlHtml(run);
+    }
 
-    card.innerHTML = `
-      <div class="agent-avatar">${esc(meta.icon)}</div>
-      <div class="agent-body">
-        <div class="agent-top">
-          <span class="agent-name">${esc(meta.label)}</span>
-          <span class="agent-status ${ev.outcome}">${esc(statusText)}</span>
-        </div>
-        <p class="agent-role">${esc(meta.role)}</p>
-        ${ev.error ? `<p class="agent-error">${esc(ev.error)}</p>` : ""}
-        ${think}
-        <div class="agent-output ${bodyHtml ? "" : "hidden"}">${bodyHtml}</div>
-        ${techBits ? `<p class="agent-tech muted">${esc(techBits)}</p>` : ""}
-      </div>
+    const errHtml = ev.error
+      ? `<p class="agent-error">${esc(friendlyStepError(ev.error))}</p>`
+      : "";
+    const thinkBlock = think || "";
+
+    const bodyInner = `
+      ${errHtml}
+      ${thinkBlock}
+      ${midHtml}
+      ${hitl}
     `;
-    el.appendChild(card);
+
+    const cardTitle =
+      ["You", "Deliver"].includes(meta.label) || /\bAgent\b/i.test(meta.label)
+        ? meta.label
+        : `${meta.label} Agent`;
+
+    details.innerHTML = `
+      <summary class="agent-summary">
+        <span class="agent-card-icon" aria-hidden="true">${esc(meta.icon)}</span>
+        <span class="agent-card-info">
+          <span class="agent-card-title">${esc(cardTitle)}</span>
+          <span class="agent-card-meta">
+            <span><b>Status:</b> ${esc(statusText)}</span>
+            <span><b>Duration:</b> ${esc(durationText)}</span>
+            <span><b>Tools:</b> ${esc(toolText)}</span>
+          </span>
+          <span class="agent-view-reasoning">
+            <span class="agent-caret" aria-hidden="true">▾</span>
+            ${thinkBlock ? "View reasoning" : "View result"}
+          </span>
+        </span>
+        <button class="agent-copy" type="button" title="Copy agent output" aria-label="Copy ${esc(
+          meta.label
+        )} output">⧉</button>
+      </summary>
+      <div class="agent-step-body">${bodyInner}</div>
+    `;
+    el.appendChild(details);
 
     if (idx < events.length - 1) {
-      const link = document.createElement("div");
-      link.className = "handoff";
-      link.innerHTML = `<span>next</span>`;
-      el.appendChild(link);
+      const nextEv = events[idx + 1];
+      el.insertAdjacentHTML("beforeend", handoffHtml(ev.node_name, nextEv.node_name));
+    } else if (ev.outcome === "success" && run.status === "RUNNING") {
+      const pos = nodeOrder.indexOf(ev.node_name);
+      const guess = pos >= 0 ? nodeOrder[pos + 1] : null;
+      if (guess) el.insertAdjacentHTML("beforeend", handoffHtml(ev.node_name, guess));
     }
   });
+
+  // Auto-scroll chat to latest bubble
+  el.scrollTop = el.scrollHeight;
 }
 
 function renderReport(run) {
   const el = document.getElementById("report-view");
+  const section = document.getElementById("answer-section");
   const state = run.state || {};
-  const report = state.final_report || state.final_reply || state.report || state.draft_reply;
   const dlBtn = document.getElementById("download-md-btn");
   const printBtn = document.getElementById("print-btn");
+  // Only surface the standalone answer card once the run is delivered;
+  // mid-run drafts live inside the chat bubbles.
+  const report =
+    run.status === "COMPLETED"
+      ? state.final_report || state.final_reply || state.report || state.draft_reply
+      : "";
   if (report) {
+    section?.classList.remove("hidden");
     el.classList.remove("empty");
     el.innerHTML = mdToHtml(report);
     currentReportText = report;
@@ -471,6 +730,7 @@ function renderReport(run) {
     if (dlBtn) dlBtn.disabled = false;
     if (printBtn) printBtn.disabled = false;
   } else {
+    section?.classList.add("hidden");
     el.classList.add("empty");
     el.textContent = "No output yet — it appears after agents produce a draft/reply.";
     currentReportText = "";
@@ -624,10 +884,10 @@ function renderHitl(run) {
       }</div>
     `;
 
-    // Auto-open modal once per paused run so users don't scroll.
+    // Prefer inline chat HITL; don't auto-open the modal.
     if (modalAutoOpenedFor !== run.run_id) {
       modalAutoOpenedFor = run.run_id;
-      openHitlModal();
+      document.getElementById("agent-chat")?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
   } else if ((run.error || "").includes("resume") && run.status !== "COMPLETED") {
     pausedBanner.classList.remove("hidden");
@@ -651,16 +911,198 @@ function switchTab(tab) {
   if (tab === "report" || tab === "answer") {
     document.getElementById("report-view")?.scrollIntoView({ behavior: "smooth", block: "start" });
   } else if (tab === "agents") {
-    document.getElementById("process-panel")?.setAttribute("open", "");
-    document.getElementById("process-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.getElementById("agent-chat")?.scrollIntoView({ behavior: "smooth", block: "start" });
   } else if (tab === "trace" || tab === "state") {
     document.getElementById("tech-panel")?.setAttribute("open", "");
     document.getElementById("tech-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
 
+function sourceHostname(href) {
+  try {
+    return new URL(href).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function collectRunSources(run) {
+  const state = run.state || {};
+  const raw = state.search_results || [];
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const href = String(item.href || "").trim();
+    if (!href || seen.has(href)) continue;
+    seen.add(href);
+    out.push({
+      title: String(item.title || href).trim(),
+      href,
+      host: sourceHostname(href),
+      body: String(item.body || "").trim(),
+    });
+  }
+  return out;
+}
+
+function renderSources(run) {
+  const panel = document.getElementById("sources-panel");
+  const list = document.getElementById("sources-list");
+  const countEl = document.getElementById("sources-count");
+  const emptyEl = document.getElementById("sources-empty");
+  if (!panel || !list) return;
+
+  const sources = collectRunSources(run);
+  list.innerHTML = "";
+  if (countEl) countEl.textContent = `(${sources.length})`;
+
+  if (!sources.length) {
+    panel.classList.add("hidden");
+    document.querySelector(".chat-app")?.classList.remove("has-sources");
+    if (emptyEl) emptyEl.classList.remove("hidden");
+    return;
+  }
+
+  panel.classList.remove("hidden");
+  document.querySelector(".chat-app")?.classList.add("has-sources");
+  if (emptyEl) emptyEl.classList.add("hidden");
+
+  sources.forEach((s, idx) => {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <a href="${esc(s.href)}" target="_blank" rel="noreferrer" class="source-link">
+        <span class="source-index">${idx + 1}</span>
+        <span class="source-copy">
+          <span class="source-title">${esc(s.title)}</span>
+          <span class="source-host">${esc(s.host || s.href)}</span>
+        </span>
+      </a>`;
+    list.appendChild(li);
+  });
+}
+
+function hideSourcesPanel() {
+  document.getElementById("sources-panel")?.classList.add("hidden");
+  document.querySelector(".chat-app")?.classList.remove("has-sources");
+  const list = document.getElementById("sources-list");
+  if (list) list.innerHTML = "";
+  const countEl = document.getElementById("sources-count");
+  if (countEl) countEl.textContent = "(0)";
+}
+
+const EXEC_LOG_STEPS = {
+  research_report: [
+    { node: "researcher", label: "Planning query..." },
+    { node: "knowledge_lookup", label: "Reading knowledge docs..." },
+    { node: "web_search", label: "Searching web..." },
+    { node: "writer", label: "Drafting report..." },
+    { node: "source_guard", label: "Verifying citations..." },
+    { node: "critic", label: "Checking quality..." },
+    { node: "human_approve", label: "Waiting for your review..." },
+    { node: "deliver", label: "Delivering answer..." },
+  ],
+  support_resolution: [
+    { node: "knowledge_lookup", label: "Reading knowledge docs..." },
+    { node: "frontline", label: "Triaging ticket..." },
+    { node: "sentiment", label: "Assessing tone..." },
+    { node: "faq_agent", label: "Drafting FAQ reply..." },
+    { node: "technical_agent", label: "Drafting technical reply..." },
+    { node: "billing_agent", label: "Drafting billing reply..." },
+    { node: "quality_critic", label: "Verifying reply quality..." },
+    { node: "human_escalate", label: "Waiting for your review..." },
+    { node: "deliver", label: "Sending reply..." },
+  ],
+};
+
+function renderLiveLog(run) {
+  const panel = document.getElementById("live-log");
+  const list = document.getElementById("live-log-list");
+  if (!panel || !list) return;
+
+  const steps = EXEC_LOG_STEPS[run.graph_name] || EXEC_LOG_STEPS.research_report;
+  const events = run.trace || [];
+  const byNode = {};
+  for (const ev of events) {
+    // Keep the latest event for each node.
+    byNode[ev.node_name] = ev;
+  }
+
+  // Only show steps that appear in this run's path or are currently running.
+  const touched = new Set(Object.keys(byNode));
+  if (run.current_node) touched.add(run.current_node);
+
+  const visible = steps.filter((step) => {
+    // Always show steps once anything has started, but hide specialist branches
+    // that never ran (support FAQ vs billing etc.).
+    if (["faq_agent", "technical_agent", "billing_agent"].includes(step.node)) {
+      return touched.has(step.node);
+    }
+    if (step.node === "human_approve" || step.node === "human_escalate") {
+      return touched.has(step.node) || run.status === "PAUSED";
+    }
+    return true;
+  });
+
+  list.innerHTML = "";
+  let any = false;
+  for (const step of visible) {
+    const ev = byNode[step.node];
+    let cls = "pending";
+    let mark = "○";
+    if (ev?.outcome === "success") {
+      cls = "done";
+      mark = "✓";
+    } else if (ev?.outcome === "error") {
+      cls = "error";
+      mark = "✕";
+    } else if (ev?.outcome === "paused" || (run.status === "PAUSED" && run.current_node === step.node)) {
+      cls = "paused";
+      mark = "★";
+    } else if (
+      ev?.outcome === "running" ||
+      (["RUNNING", "RETRYING", "PENDING"].includes(run.status) && run.current_node === step.node)
+    ) {
+      cls = "active";
+      mark = "●";
+    } else if (!ev && !touched.has(step.node) && !events.length) {
+      // Before first event, keep pending.
+      cls = "pending";
+    } else if (!ev) {
+      // Not reached yet (or skipped branch already filtered).
+      cls = "pending";
+    }
+
+    // Hide untouched future steps until the run has at least started,
+    // but once started show the pipeline ahead as pending.
+    if (!events.length && !["RUNNING", "RETRYING", "PENDING"].includes(run.status)) {
+      continue;
+    }
+
+    any = true;
+    const li = document.createElement("li");
+    li.className = cls;
+    const label =
+      cls === "active" ? step.label : step.label.replace(/\.\.\.$/, cls === "done" ? "" : "...");
+    li.innerHTML = `<span class="log-mark" aria-hidden="true">${mark}</span><span class="log-text">${esc(
+      label || step.label
+    )}</span>`;
+    list.appendChild(li);
+  }
+
+  panel.classList.toggle("hidden", !any);
+}
+
+function hideLiveLog() {
+  document.getElementById("live-log")?.classList.add("hidden");
+  const list = document.getElementById("live-log-list");
+  if (list) list.innerHTML = "";
+}
+
 async function selectRun(runId) {
   selectedRunId = runId;
+  showEmptyState(false);
   await refreshRuns();
   const run = await api(`/api/runs/${runId}`);
   const title = run.state?.topic || run.state?.subject || "Untitled task";
@@ -679,23 +1121,14 @@ async function selectRun(runId) {
     `${revisions}id ${run.run_id} · step ${run.step} · updated ${fmtTime(run.updated_at)}`;
 
   renderSimpleProgress(run);
+  renderLiveLog(run);
   renderAgentFeed(run);
   renderReport(run);
   renderTrace(run);
   renderHitl(run);
-  const prevStatus = lastStatus;
+  renderSources(run);
   lastStatus = run.status;
   document.getElementById("state-view").textContent = JSON.stringify(run.state, null, 2);
-
-  // Auto-expand process while working; keep answer primary when done.
-  const processPanel = document.getElementById("process-panel");
-  if (processPanel) {
-    if (["RUNNING", "RETRYING", "PENDING", "PAUSED"].includes(run.status)) {
-      processPanel.open = true;
-    } else if (run.status === "COMPLETED" && prevStatus !== "COMPLETED") {
-      processPanel.open = false;
-    }
-  }
 
   if (pollTimer) clearInterval(pollTimer);
   if (["RUNNING", "RETRYING", "PENDING"].includes(run.status)) {
@@ -706,28 +1139,29 @@ async function selectRun(runId) {
 document.getElementById("start-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const pipeline = document.getElementById("pipeline").value || "research_report";
+  const input = document.getElementById("composer-input");
+  const text = (input?.value || "").trim();
   let payload;
   if (pipeline === "support_resolution") {
     payload = {
       graph: "support_resolution",
       subject: document.getElementById("ticket-subject").value.trim(),
-      message: document.getElementById("ticket-message").value.trim(),
+      message: text,
       customer_name: document.getElementById("customer-name").value.trim() || "Customer",
       source: "manual",
     };
     if (!payload.subject || !payload.message) {
-      alert("Subject and message are required for support tickets.");
+      alert("Enter the ticket subject (above the box) and the customer message.");
       return;
     }
   } else {
-    const topic = document.getElementById("topic").value.trim();
-    if (topic.length < 2) {
-      alert("Enter a research topic.");
+    if (text.length < 2) {
+      alert("Type what you want researched.");
       return;
     }
     payload = {
       graph: "research_report",
-      topic,
+      topic: text,
       report_type: document.getElementById("report-type").value || "general",
     };
   }
@@ -736,12 +1170,97 @@ document.getElementById("start-form").addEventListener("submit", async (e) => {
     headers: { "Idempotency-Key": newIdempotencyKey() },
     body: JSON.stringify(payload),
   });
-  if (pipeline === "research_report") {
-    document.getElementById("topic").value = "";
-  }
-  switchTab("answer");
+  input.value = "";
+  input.style.height = "";
   await refreshRuns();
   await selectRun(data.run_id);
+});
+
+// Composer behaves like a chat box: Enter sends, Shift+Enter is a newline.
+const composerInput = document.getElementById("composer-input");
+composerInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById("start-form").requestSubmit();
+  }
+});
+composerInput?.addEventListener("input", () => {
+  composerInput.style.height = "auto";
+  composerInput.style.height = `${Math.min(composerInput.scrollHeight, 180)}px`;
+});
+
+function showEmptyState(show) {
+  document.getElementById("empty-state")?.classList.toggle("hidden", !show);
+  document.getElementById("simple-progress")?.classList.toggle("hidden", show);
+  // Hero mode: center greeting + composer when nothing is running.
+  document.querySelector(".chat-main")?.classList.toggle("hero", show);
+  // Keep technical details out of the chat surface.
+  document.getElementById("tech-panel")?.classList.add("hidden");
+  if (show) {
+    hideSourcesPanel();
+    hideLiveLog();
+    document.getElementById("answer-section")?.classList.add("hidden");
+    document.getElementById("delivered-banner")?.classList.add("hidden");
+    document.getElementById("paused-banner")?.classList.add("hidden");
+    const chat = document.getElementById("agent-chat");
+    if (chat) chat.innerHTML = "";
+  }
+}
+
+document.getElementById("suggestion-chips")?.addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-suggest]");
+  if (!chip || !composerInput) return;
+  // Chips are research prompts — make sure the research workflow is active.
+  const pipelineSel = document.getElementById("pipeline");
+  if (pipelineSel && pipelineSel.value !== "research_report") {
+    pipelineSel.value = "research_report";
+    syncPipelineForm();
+  }
+  composerInput.value = chip.getAttribute("data-suggest");
+  composerInput.dispatchEvent(new Event("input"));
+  composerInput.focus();
+});
+
+document.getElementById("live-log-copy")?.addEventListener("click", async () => {
+  const lines = [...document.querySelectorAll("#live-log-list li")]
+    .map((li) => li.innerText.trim())
+    .join("\n");
+  if (!lines) return;
+  await navigator.clipboard.writeText(lines);
+  const btn = document.getElementById("live-log-copy");
+  if (!btn) return;
+  btn.textContent = "✓";
+  setTimeout(() => {
+    btn.textContent = "⧉";
+  }, 1000);
+});
+
+document.getElementById("sources-copy-btn")?.addEventListener("click", async () => {
+  const links = [...document.querySelectorAll("#sources-list .source-link")]
+    .map((a, i) => `${i + 1}. ${a.querySelector(".source-title")?.textContent || ""} — ${a.href}`)
+    .join("\n");
+  if (!links) return;
+  await navigator.clipboard.writeText(links);
+  const btn = document.getElementById("sources-copy-btn");
+  if (!btn) return;
+  btn.textContent = "✓";
+  setTimeout(() => {
+    btn.textContent = "⧉";
+  }, 1000);
+});
+
+document.getElementById("new-task-btn")?.addEventListener("click", () => {
+  selectedRunId = null;
+  if (pollTimer) clearInterval(pollTimer);
+  lastStatus = null;
+  document.getElementById("detail-title").textContent = "Ready when you are.";
+  document.getElementById("detail-kicker").textContent = "New task";
+  const pill = document.getElementById("status-pill");
+  pill.textContent = "—";
+  pill.className = "pill";
+  showEmptyState(true);
+  refreshRuns().catch(() => {});
+  composerInput?.focus();
 });
 
 function syncPipelineForm() {
@@ -749,11 +1268,15 @@ function syncPipelineForm() {
   currentPipelineId = id;
   const meta = pipelines.find((p) => p.id === id);
   document.getElementById("pipeline-desc").textContent = meta?.description || "";
-  const research = document.getElementById("research-fields");
   const support = document.getElementById("support-fields");
   const isSupport = id === "support_resolution";
-  research.classList.toggle("hidden", isSupport);
   support.classList.toggle("hidden", !isSupport);
+  document.getElementById("report-type-wrap")?.classList.toggle("hidden", isSupport);
+  if (composerInput) {
+    composerInput.placeholder = isSupport
+      ? "Paste the customer's message — e.g. I've been charged twice for Pro, order #48291…"
+      : "Ask anything — e.g. Edge AI market for industrial IoT";
+  }
 
   // Knowledge upload and Zendesk are support-pipeline concerns.
   document.getElementById("knowledge-panel")?.classList.toggle("hidden", !isSupport);
@@ -1028,6 +1551,66 @@ document.getElementById("print-btn")?.addEventListener("click", () => {
   setTimeout(() => w.print(), 300);
 });
 
+document.getElementById("view-final-btn")?.addEventListener("click", () => {
+  document.getElementById("answer-section")?.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
+});
+
+async function submitHitlDecision(decision, comment) {
+  if (!selectedRunId) return;
+  closeHitlModal();
+  await api(`/api/runs/${selectedRunId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ decision, comment: comment || "" }),
+  });
+  const watch = async () => {
+    await selectRun(selectedRunId);
+    if (["RUNNING", "RETRYING", "PENDING"].includes(lastStatus)) {
+      setTimeout(watch, 1500);
+    }
+  };
+  setTimeout(watch, 500);
+}
+
+document.getElementById("agent-chat")?.addEventListener("click", async (e) => {
+  const copyBtn = e.target.closest(".agent-copy");
+  if (copyBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const step = copyBtn.closest(".agent-step");
+    const text = step?.querySelector(".agent-step-body")?.innerText?.trim() || "";
+    if (text) {
+      await navigator.clipboard.writeText(text);
+      copyBtn.textContent = "✓";
+      copyBtn.title = "Copied";
+      setTimeout(() => {
+        copyBtn.textContent = "⧉";
+        copyBtn.title = "Copy agent output";
+      }, 1200);
+    }
+    return;
+  }
+
+  const btn = e.target.closest("[data-chat-hitl]");
+  if (!btn || !selectedRunId) return;
+  const decision = btn.getAttribute("data-chat-hitl");
+  const commentEl = document.getElementById("chat-hitl-comment");
+  const comment = (commentEl?.value || "").trim();
+  if (decision === "revise" && !comment) {
+    alert("Add revision notes before requesting a revision.");
+    return;
+  }
+  if (decision === "approve" && comment) {
+    const ok = confirm(
+      "You typed feedback, but Approve does not rewrite.\n\nOK = approve as-is\nCancel = use Request revision"
+    );
+    if (!ok) return;
+  }
+  await submitHitlDecision(decision, comment);
+});
+
 document.getElementById("approve-btn").addEventListener("click", async () => {
   if (!selectedRunId) return;
   const comment = document.getElementById("hitl-comment").value;
@@ -1039,19 +1622,7 @@ document.getElementById("approve-btn").addEventListener("click", async () => {
     );
     if (!useApproveAnyway) return;
   }
-  closeHitlModal();
-  await api(`/api/runs/${selectedRunId}/approve`, {
-    method: "POST",
-    body: JSON.stringify({ decision: "approve", comment }),
-  });
-  // Poll until deliver finishes, then report tab auto-opens on COMPLETED.
-  const watch = async () => {
-    await selectRun(selectedRunId);
-    if (["RUNNING", "RETRYING", "PENDING"].includes(lastStatus)) {
-      setTimeout(watch, 1500);
-    }
-  };
-  setTimeout(watch, 500);
+  await submitHitlDecision("approve", comment);
 });
 
 document.getElementById("revise-btn")?.addEventListener("click", async () => {
@@ -1061,30 +1632,14 @@ document.getElementById("revise-btn")?.addEventListener("click", async () => {
     alert("Add revision notes in the comment box (e.g. what the writer should fix).");
     return;
   }
-  closeHitlModal();
   document.getElementById("hitl-comment").value = "";
-  await api(`/api/runs/${selectedRunId}/approve`, {
-    method: "POST",
-    body: JSON.stringify({ decision: "revise", comment }),
-  });
-  const watch = async () => {
-    await selectRun(selectedRunId);
-    if (["RUNNING", "RETRYING", "PENDING"].includes(lastStatus)) {
-      setTimeout(watch, 1500);
-    }
-  };
-  setTimeout(watch, 500);
+  await submitHitlDecision("revise", comment);
 });
 
 document.getElementById("reject-btn").addEventListener("click", async () => {
   if (!selectedRunId) return;
   const comment = document.getElementById("hitl-comment").value;
-  closeHitlModal();
-  await api(`/api/runs/${selectedRunId}/approve`, {
-    method: "POST",
-    body: JSON.stringify({ decision: "reject", comment }),
-  });
-  setTimeout(() => selectRun(selectedRunId), 500);
+  await submitHitlDecision("reject", comment);
 });
 
 document.getElementById("resume-btn").addEventListener("click", async () => {
@@ -1107,6 +1662,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeHitlModal();
 });
 
+showEmptyState(true);
 refreshRuns().catch(console.error);
 setInterval(() => refreshRuns().catch(() => {}), 5000);
 
