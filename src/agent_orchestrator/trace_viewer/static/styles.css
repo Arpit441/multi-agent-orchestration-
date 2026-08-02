@@ -15,7 +15,10 @@
 
 * { box-sizing: border-box; }
 
-html { font-size: 17px; }
+html {
+  font-size: 17px;
+  color-scheme: dark;
+}
 
 body {
   margin: 0;
@@ -109,6 +112,12 @@ select {
   border-radius: 10px;
   padding: 0.7rem 0.85rem;
   font: inherit;
+  color-scheme: dark;
+}
+select option,
+select optgroup {
+  background: var(--bg2);
+  color: var(--text);
 }
 
 .knowledge-list {
@@ -2226,7 +2235,8 @@ html, body { height: 100%; }
   font-size: 0.78rem;
   font-weight: 650;
   color: var(--text);
-  background: transparent;
+  color-scheme: dark;
+  background-color: var(--bg2);
   border: 0;
   padding: 0.28rem 1.15rem 0.28rem 0.15rem;
   cursor: pointer;
@@ -2236,6 +2246,10 @@ html, body { height: 100%; }
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   min-width: 6.5rem;
+}
+.run-opt-budget select option {
+  background: #1f2937;
+  color: #f3f4f6;
 }
 .run-opt-budget select:focus {
   outline: none;
