@@ -189,7 +189,22 @@ async def knowledge_lookup_tool(state: State, config: dict[str, Any]) -> dict[st
 
 async def source_guard_tool(state: State, config: dict[str, Any]) -> dict[str, Any]:
     """Deterministically remove report URLs that were not returned by web search."""
+    from agent_orchestrator.api.workflow_config import feature_enabled
+
     report = str(state.get("report") or "")
+    if not feature_enabled(state, "fact_check_critic", True):
+        return {
+            "report": report,
+            "source_validation": {
+                "skipped": True,
+                "reason": "fact_check_critic disabled",
+                "allowed_url_count": 0,
+                "removed_url_count": 0,
+                "removed_urls": [],
+                "valid": True,
+            },
+        }
+
     allowed = {
         str(item.get("href"))
         for item in (state.get("search_results") or [])
@@ -247,6 +262,8 @@ class ToolNode:
         self.tool_name: str = config.get("tool", name)
 
     async def run(self, state: State) -> State:
+        from agent_orchestrator.core.budget import BudgetTracker
+
         tool = get_tool(self.tool_name)
         result = tool(state, self.config)
         if hasattr(result, "__await__"):
@@ -257,4 +274,5 @@ class ToolNode:
             )
         state.update(result)
         state.set("last_tool", self.tool_name)
+        BudgetTracker(state).record_step(1)
         return state

@@ -8,14 +8,19 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=39" />
+  <link rel="stylesheet" href="/static/styles.css?v=54" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
+  <button id="sidebar-show-btn" type="button" class="sidebar-show-btn hidden" title="Show sidebar" aria-label="Show sidebar">›</button>
+
   <div class="chat-app">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-top">
-        <p class="brand">Agent Orchestrator</p>
+        <div class="sidebar-brand-row">
+          <p class="brand">Agent Orchestrator</p>
+          <button id="sidebar-hide-btn" type="button" class="ghost sidebar-toggle" title="Hide sidebar" aria-label="Hide sidebar">‹</button>
+        </div>
         <button id="new-task-btn" type="button" class="new-task">+ New task</button>
       </div>
 
@@ -61,12 +66,27 @@
 
     <main class="chat-main">
       <header class="chat-topbar">
-        <div>
+        <div class="topbar-title">
           <p class="detail-kicker" id="detail-kicker">New task</p>
           <h2 id="detail-title">Ready when you are.</h2>
         </div>
+        <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="Workspace view">
+          <button type="button" class="view-tab" data-view="report" role="tab" aria-selected="false">Report</button>
+          <button type="button" class="view-tab" data-view="activity" role="tab" aria-selected="false">Activity</button>
+        </div>
+        <div id="cost-strip" class="cost-strip hidden" aria-label="Cost and performance">
+          <div class="token-bar-track" title="Token budget">
+            <div id="token-bar" class="token-bar green" style="width:0%"></div>
+          </div>
+          <span id="cost-strip-text" class="cost-strip-text">—</span>
+          <span id="path-badge" class="path-badge">—</span>
+        </div>
         <span id="status-pill" class="pill">—</span>
       </header>
+
+      <div id="circuit-banner" class="circuit-banner hidden" role="status">
+        Switched to fast fallback
+      </div>
 
       <div id="thread" class="thread">
         <div id="empty-state" class="empty-state">
@@ -175,6 +195,34 @@
           <textarea id="composer-input" rows="3" placeholder="Ask anything — e.g. Edge AI market for industrial IoT" maxlength="5000"></textarea>
           <button type="submit" class="send-btn" title="Run agents">➤</button>
         </div>
+        <div id="advanced-config" class="run-options" aria-label="Run options">
+          <div class="run-options-row">
+            <label id="adv-token-budget" class="run-opt run-opt-budget" title="Max Gemini tokens before fast fallback">
+              <span class="run-opt-kicker">Budget</span>
+              <select id="token-budget-select" aria-label="Token budget">
+                <option value="4000">4k light</option>
+                <option value="8000" selected>8k default</option>
+                <option value="15000">15k deep</option>
+                <option value="25000">25k heavy</option>
+              </select>
+            </label>
+            <label id="adv-deep-research" class="run-opt run-opt-toggle hidden" title="Debate loops for a deeper, more critical report">
+              <input type="checkbox" id="deep-research-toggle" />
+              <span class="run-opt-pill">
+                <span class="run-opt-pill-title">Deep research</span>
+                <span id="deep-research-estimate" class="run-opt-pill-meta">off</span>
+              </span>
+            </label>
+            <label id="adv-force-human" class="run-opt run-opt-toggle hidden" title="Always pause for approval before sending the reply">
+              <input type="checkbox" id="force-human-toggle" />
+              <span class="run-opt-pill">
+                <span class="run-opt-pill-title">Human review</span>
+                <span id="force-human-estimate" class="run-opt-pill-meta">auto</span>
+              </span>
+            </label>
+            <p id="advanced-empty" class="muted advanced-empty hidden">No run options for this workflow.</p>
+          </div>
+        </div>
         <p id="pipeline-desc" class="muted composer-hint"></p>
       </form>
     </main>
@@ -227,6 +275,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=39"></script>
+  <script src="/static/app.js?v=54"></script>
 </body>
 </html>

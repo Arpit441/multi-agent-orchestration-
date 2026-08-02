@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agent_orchestrator.core.budget import default_budget_fields
 from agent_orchestrator.core.graph import Graph, GraphBuilder
 from agent_orchestrator.core.policies import BackoffStrategy, RetryPolicy
 from agent_orchestrator.core.state import State
@@ -137,30 +138,66 @@ def _critic_ok(state: State) -> bool:
     return False
 
 
+def _debate_loop_enabled(state: State) -> bool:
+    from agent_orchestrator.api.workflow_config import feature_enabled
+
+    cfg = state.get("workflow_config")
+    if not isinstance(cfg, dict):
+        return True
+    return feature_enabled(state, "debate_loop", False)
+
+
+def _force_human_review(state: State) -> bool:
+    from agent_orchestrator.api.workflow_config import feature_enabled
+
+    return feature_enabled(state, "force_human_review", False)
+
+
 def _critic_needs_revision(state: State) -> bool:
     return not _critic_ok(state)
 
 
+def _approved_for_deliver(state: State) -> bool:
+    return _critic_ok(state) and not _force_human_review(state)
+
+
+def _force_human_pause(state: State) -> bool:
+    """Pause for human when critic would otherwise deliver."""
+    return _critic_ok(state) and _force_human_review(state)
+
+
 def _route_faq_revision(state: State) -> bool:
-    return _critic_needs_revision(state) and _intent(state) in {"faq", "general", "account"}
+    return (
+        _debate_loop_enabled(state)
+        and _critic_needs_revision(state)
+        and _intent(state) in {"faq", "general", "account"}
+    )
 
 
 def _route_tech_revision(state: State) -> bool:
-    return _critic_needs_revision(state) and _intent(state) in {
-        "technical",
-        "bug",
-        "outage",
-        "product",
-    }
+    return (
+        _debate_loop_enabled(state)
+        and _critic_needs_revision(state)
+        and _intent(state) in {
+            "technical",
+            "bug",
+            "outage",
+            "product",
+        }
+    )
 
 
 def _route_billing_revision(state: State) -> bool:
-    return _critic_needs_revision(state) and _intent(state) in {
-        "billing",
-        "payment",
-        "refund",
-        "invoice",
-    }
+    return (
+        _debate_loop_enabled(state)
+        and _critic_needs_revision(state)
+        and _intent(state) in {
+            "billing",
+            "payment",
+            "refund",
+            "invoice",
+        }
+    )
 
 
 def build_support_resolution_graph() -> Graph:
@@ -421,7 +458,16 @@ def build_support_resolution_graph() -> Graph:
         builder.add_edge(specialist, "quality_critic")
 
     builder.add_edge(
-        "quality_critic", "deliver", condition=_critic_ok, label="approved"
+        "quality_critic",
+        "human_escalate",
+        condition=_force_human_pause,
+        label="force_human_review",
+    )
+    builder.add_edge(
+        "quality_critic",
+        "deliver",
+        condition=_approved_for_deliver,
+        label="approved",
     )
     builder.add_edge(
         "quality_critic", "faq_agent", condition=_route_faq_revision, label="revise_faq"
@@ -492,5 +538,6 @@ def default_support_state(
         "revision_count": 0,
         "report": "",
         "knowledge_context": "",
+        **default_budget_fields(),
     }
     return state

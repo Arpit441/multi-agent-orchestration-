@@ -21,6 +21,12 @@ from agent_orchestrator.api.cache_util import cache_stats, cached_get, graph_met
 from agent_orchestrator.api.rate_limit import limiter
 from agent_orchestrator.api import runners as runner_registry
 from agent_orchestrator.api.settings import get_settings
+from agent_orchestrator.api.telemetry import build_run_telemetry, list_item_telemetry
+from agent_orchestrator.api.workflow_config import (
+    apply_config_to_state,
+    list_workflows,
+    resolve_workflow_config,
+)
 from agent_orchestrator.core.runner import RunRecord
 from agent_orchestrator.core.state import RunStatus
 from agent_orchestrator.examples.research_report_pipeline import (
@@ -33,21 +39,6 @@ from agent_orchestrator.knowledge import extract_text_from_bytes, get_knowledge_
 
 public_router = APIRouter(prefix="/api")
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
-
-PIPELINES = [
-    {
-        "id": "research_report",
-        "label": "Research report",
-        "description": "Topic → cited, critically reviewed report with human sign-off.",
-        "input_mode": "research",
-    },
-    {
-        "id": "support_resolution",
-        "label": "Customer Support Resolution Network",
-        "description": "Frontline → sentiment → FAQ / Technical / Billing specialists → escalate if needed.",
-        "input_mode": "support",
-    },
-]
 
 
 class StartRunRequest(BaseModel):
@@ -65,6 +56,10 @@ class StartRunRequest(BaseModel):
     external_ticket_id: str | None = None
     idempotency_key: str | None = Field(default=None, max_length=200)
     initial_state: dict[str, Any] | None = None
+    # Optional deep-merge override of workflow defaults (budget + features).
+    config_override: dict[str, Any] | None = None
+    # Dashboard Advanced presets: "deep_research" | "force_human_review"
+    ui_preset: str | None = Field(default=None, max_length=64)
 
 
 class ZendeskConnectRequest(BaseModel):
@@ -96,7 +91,16 @@ class LoginRequest(BaseModel):
 
 
 def _serialize(run: RunRecord) -> dict[str, Any]:
-    return run.to_dict()
+    payload = run.to_dict()
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    payload["telemetry"] = build_run_telemetry(
+        state,
+        status=payload.get("status"),
+        updated_at=payload.get("updated_at"),
+    )
+    # Convenience mirrors — budget fields are also inside state.budget.
+    payload["budget"] = state.get("budget") if isinstance(state.get("budget"), dict) else {}
+    return payload
 
 
 async def _run_in_background(run_id: str) -> None:
@@ -114,22 +118,20 @@ async def _run_in_background(run_id: str) -> None:
 
 def _build_state(body: StartRunRequest) -> dict[str, Any]:
     if body.initial_state:
-        return dict(body.initial_state)
-
-    if body.graph == "research_report":
+        state = dict(body.initial_state)
+    elif body.graph == "research_report":
         topic = (body.topic or "").strip()
         if len(topic) < 2:
             raise HTTPException(400, "topic is required for research_report (min 2 chars)")
-        return default_initial_state(topic, body.report_type)
-
-    if body.graph == "support_resolution":
+        state = default_initial_state(topic, body.report_type)
+    elif body.graph == "support_resolution":
         subject = (body.subject or body.topic or "").strip()
         message = (body.message or "").strip()
         if len(subject) < 2:
             raise HTTPException(400, "subject is required for support tickets")
         if len(message) < 5:
             raise HTTPException(400, "message is required for support tickets (min 5 chars)")
-        return default_support_state(
+        state = default_support_state(
             subject=subject,
             message=message,
             customer_name=body.customer_name,
@@ -138,8 +140,18 @@ def _build_state(body: StartRunRequest) -> dict[str, Any]:
             source=body.source or "manual",
             external_ticket_id=body.external_ticket_id,
         )
+    else:
+        raise HTTPException(400, f"Unknown graph: {body.graph}")
 
-    raise HTTPException(400, f"Unknown graph: {body.graph}")
+    try:
+        config, source = resolve_workflow_config(
+            body.graph,
+            body.config_override,
+            ui_preset=body.ui_preset,
+        )
+    except KeyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return apply_config_to_state(state, config, source=source)
 
 
 def _idempotency_key_from_request(request: Request, body: StartRunRequest) -> str | None:
@@ -245,7 +257,7 @@ async def health(request: Request) -> dict[str, Any]:
 
 @public_router.get("/pipelines")
 async def pipelines(request: Request) -> dict[str, Any]:
-    return {"pipelines": PIPELINES}
+    return {"pipelines": list_workflows()}
 
 
 @public_router.get("/report-types")
@@ -313,13 +325,34 @@ async def metrics(request: Request) -> dict[str, Any]:
 
 @router.get("/runs")
 @limiter.limit("60/minute")
-async def list_runs(request: Request, limit: int = 50) -> dict[str, Any]:
+async def list_runs(request: Request, limit: int = 5) -> dict[str, Any]:
     store = runner_registry.get_store()
+    limit = max(1, min(int(limit or 5), 5))
     if hasattr(store, "list_runs"):
         runs = await store.list_runs(limit=limit)  # type: ignore[attr-defined]
     else:
         runs = []
-    return {"runs": runs}
+    # Ensure list rows carry cost/path telemetry (stores may already embed it).
+    enriched: list[dict[str, Any]] = []
+    for row in runs:
+        item = dict(row)
+        if "tokens_used" not in item or "path" not in item:
+            state = item.get("state") if isinstance(item.get("state"), dict) else {}
+            # Prefer embedded telemetry snapshot; otherwise derive if state present.
+            if state:
+                item.update(
+                    list_item_telemetry(
+                        state,
+                        status=item.get("status"),
+                        updated_at=item.get("updated_at"),
+                    )
+                )
+            elif "telemetry" in item and isinstance(item["telemetry"], dict):
+                item.update(item["telemetry"])
+        # Drop bulky state from list responses if a store included it.
+        item.pop("state", None)
+        enriched.append(item)
+    return {"runs": enriched}
 
 
 @router.get("/runs/{run_id}")
@@ -329,6 +362,18 @@ async def get_run(request: Request, run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(404, "Run not found")
     return _serialize(run)
+
+
+@router.delete("/runs/{run_id}")
+@limiter.limit("30/minute")
+async def delete_run(request: Request, run_id: str) -> dict[str, Any]:
+    store = runner_registry.get_store()
+    if not hasattr(store, "delete_run"):
+        raise HTTPException(501, "Delete not supported by this store")
+    ok = await store.delete_run(run_id)  # type: ignore[attr-defined]
+    if not ok:
+        raise HTTPException(404, "Run not found")
+    return {"ok": True, "deleted": run_id}
 
 
 @router.get("/runs/{run_id}/trace")

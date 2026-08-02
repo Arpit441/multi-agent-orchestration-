@@ -14,6 +14,9 @@ from agent_orchestrator.core.state import RunStatus, State
 class SQLiteStore(PersistenceStore):
     """Durable store so crashed runs can resume from the last snapshot."""
 
+    # Cap sidebar / disk history — oldest runs (and their traces) are deleted.
+    HISTORY_KEEP = 5
+
     def __init__(self, db_path: str | Path = "data/orchestrator.db") -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,6 +113,38 @@ class SQLiteStore(PersistenceStore):
                     """,
                     (run.run_id, seq, json.dumps(event.to_dict(), default=str)),
                 )
+        await self.prune_old_runs(keep=self.HISTORY_KEEP)
+
+    async def prune_old_runs(self, keep: int = 5) -> int:
+        """Delete oldest runs beyond ``keep``, including traces/snapshots/idempotency."""
+        keep = max(1, int(keep))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT run_id FROM runs ORDER BY created_at DESC"
+            ).fetchall()
+            if len(rows) <= keep:
+                return 0
+            drop_ids = [str(r["run_id"]) for r in rows[keep:]]
+            for rid in drop_ids:
+                conn.execute("DELETE FROM trace_events WHERE run_id = ?", (rid,))
+                conn.execute("DELETE FROM snapshots WHERE run_id = ?", (rid,))
+                conn.execute("DELETE FROM idempotency_keys WHERE run_id = ?", (rid,))
+                conn.execute("DELETE FROM runs WHERE run_id = ?", (rid,))
+            return len(drop_ids)
+
+    async def delete_run(self, run_id: str) -> bool:
+        """Remove one run and its related rows. Returns True if a run was deleted."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT run_id FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute("DELETE FROM trace_events WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM snapshots WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM idempotency_keys WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+            return True
 
     async def load_run(self, run_id: str) -> RunRecord | None:
         with self._connect() as conn:
@@ -167,7 +202,9 @@ class SQLiteStore(PersistenceStore):
                 (run_id, step, node_name, phase, state.to_json()),
             )
 
-    async def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+    async def list_runs(self, limit: int = 5) -> list[dict[str, Any]]:
+        from agent_orchestrator.api.telemetry import list_item_telemetry
+
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -193,6 +230,13 @@ class SQLiteStore(PersistenceStore):
                 "Support"
                 if item.get("graph_name") == "support_resolution"
                 else "Research"
+            )
+            item.update(
+                list_item_telemetry(
+                    state,
+                    status=item.get("status"),
+                    updated_at=item.get("updated_at"),
+                )
             )
             out.append(item)
         return out

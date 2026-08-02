@@ -141,12 +141,23 @@ def create_app() -> FastAPI:
                 "WARNING: APP_PASSWORD is empty — API/UI are open. Set APP_PASSWORD for public deploy."
             )
 
+        if hasattr(store, "prune_old_runs"):
+            await store.prune_old_runs(keep=5)  # type: ignore[attr-defined]
+
         if hasattr(store, "list_runs"):
-            for row in await store.list_runs(limit=100):  # type: ignore[attr-defined]
-                if row.get("status") == "RUNNING":
+            from agent_orchestrator.core.state import RunStatus
+
+            for row in await store.list_runs(limit=5):  # type: ignore[attr-defined]
+                if row.get("status") in {"RUNNING", "RETRYING", "PENDING"}:
                     run = await store.load_run(row["run_id"])
-                    if run:
-                        note = "Process restarted; call resume to continue."
+                    if run and run.status in (
+                        RunStatus.RUNNING,
+                        RunStatus.RETRYING,
+                        RunStatus.PENDING,
+                    ):
+                        # Don't leave ghost "Working" items after uvicorn reload/restart.
+                        run.status = RunStatus.FAILED
+                        note = "Interrupted — server restarted before the run finished."
                         run.error = f"{run.error} | {note}" if run.error else note
                         await store.save_run(run)
 

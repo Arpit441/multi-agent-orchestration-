@@ -5,11 +5,13 @@ from __future__ import annotations
 import copy
 import json
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from agent_orchestrator.core.errors import IllegalStateTransition
+
+ExecutionMode = Literal["agentic", "fast_fallback"]
 
 
 class RunStatus(str, Enum):
@@ -47,8 +49,27 @@ def assert_transition(current: RunStatus, new: RunStatus) -> None:
         )
 
 
+class Budget(BaseModel):
+    """Run-level spend limits tracked under ``state.data['budget']``."""
+
+    max_tokens_total: int = 8000
+    max_latency_ms: int = 30_000
+    max_agent_steps: int = 5
+    tokens_used: int = 0
+    steps_taken: int = 0
+    started_at_ms: float | None = None
+
+
 class State(BaseModel):
-    """Explicit serializable state passed between nodes."""
+    """Explicit serializable state passed between nodes.
+
+    Budget / circuit-breaker fields (also see ``BudgetTracker``):
+
+    - ``budget``: :class:`Budget` dict (``max_tokens_total``, ``max_latency_ms``,
+      ``max_agent_steps``, ``tokens_used``, ``steps_taken``, ``started_at_ms``)
+    - ``execution_mode``: ``\"agentic\"`` | ``\"fast_fallback\"``
+    - ``circuit_breaker_triggered``: bool
+    """
 
     data: dict[str, Any] = Field(default_factory=dict)
 
@@ -81,3 +102,9 @@ class State(BaseModel):
             if before.get(key) != after.get(key):
                 changed[key] = {"before": before.get(key), "after": after.get(key)}
         return changed
+
+    def budget_model(self) -> Budget:
+        raw = self.get("budget") or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        return Budget.model_validate({**Budget().model_dump(), **raw})

@@ -5,7 +5,51 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass
+class GenerateResult:
+    """Text response plus usage accounting for the budget tracker."""
+
+    text: str
+    tokens_used: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+def _estimate_tokens(text: str) -> int:
+    # Rough fallback when the SDK omits usage_metadata (~4 chars / token).
+    return max(1, len(text) // 4)
+
+
+def _usage_from_response(response: Any, prompt_text: str, output_text: str) -> tuple[int, int, int]:
+    meta = getattr(response, "usage_metadata", None)
+    prompt_tokens = 0
+    completion_tokens = 0
+    total = 0
+    if meta is not None:
+        prompt_tokens = int(
+            getattr(meta, "prompt_token_count", None)
+            or getattr(meta, "input_token_count", None)
+            or 0
+        )
+        completion_tokens = int(
+            getattr(meta, "candidates_token_count", None)
+            or getattr(meta, "output_token_count", None)
+            or 0
+        )
+        total = int(getattr(meta, "total_token_count", None) or 0)
+        if not total:
+            total = prompt_tokens + completion_tokens
+    if total <= 0:
+        total = _estimate_tokens(prompt_text) + _estimate_tokens(output_text)
+        if prompt_tokens <= 0:
+            prompt_tokens = _estimate_tokens(prompt_text)
+        if completion_tokens <= 0:
+            completion_tokens = _estimate_tokens(output_text)
+    return total, prompt_tokens, completion_tokens
 
 
 class GeminiClient:
@@ -27,8 +71,14 @@ class GeminiClient:
                     "GEMINI_API_KEY is not set. Add it to your environment or .env file."
                 )
             from google import genai
+            from google.genai import types
 
-            self._client = genai.Client(api_key=self.api_key)
+            # Prevent hung planner/agent calls from blocking forever (ms).
+            http_timeout_ms = int(os.getenv("GEMINI_HTTP_TIMEOUT_MS", "45000"))
+            self._client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=http_timeout_ms),
+            )
         return self._client
 
     async def generate(
@@ -37,10 +87,10 @@ class GeminiClient:
         system: str,
         user: str,
         temperature: float = 0.4,
-    ) -> str:
+    ) -> GenerateResult:
         import asyncio
 
-        def _call() -> str:
+        def _call() -> GenerateResult:
             client = self._get_client()
             prompt = f"{system.strip()}\n\n---\n\n{user.strip()}"
             response = client.models.generate_content(
@@ -57,7 +107,16 @@ class GeminiClient:
                     text = response.candidates[0].content.parts[0].text
                 except Exception as exc:  # noqa: BLE001
                     raise RuntimeError(f"Empty Gemini response: {exc}") from exc
-            return text.strip()
+            text = text.strip()
+            total, prompt_tokens, completion_tokens = _usage_from_response(
+                response, prompt, text
+            )
+            return GenerateResult(
+                text=text,
+                tokens_used=total,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
 
         return await asyncio.to_thread(_call)
 
@@ -67,13 +126,13 @@ class GeminiClient:
         system: str,
         user: str,
         temperature: float = 0.2,
-    ) -> dict[str, Any]:
-        text = await self.generate(
+    ) -> tuple[dict[str, Any], int]:
+        result = await self.generate(
             system=system + "\n\nRespond with valid JSON only. No markdown fences.",
             user=user,
             temperature=temperature,
         )
-        return extract_json(text)
+        return extract_json(result.text), result.tokens_used
 
 
 def _sanitize_json_control_chars(text: str) -> str:

@@ -16,7 +16,13 @@ from agent_orchestrator.core.errors import (
     RetryableError,
     TimeoutError as NodeTimeoutError,
 )
+from agent_orchestrator.core.budget import BudgetTracker, default_budget_fields, ensure_budget_state
 from agent_orchestrator.core.graph import Graph
+from agent_orchestrator.core.plan_exec import (
+    apply_planner_result,
+    next_planned_node,
+    seed_fallback_plan,
+)
 from agent_orchestrator.core.state import RunStatus, State, assert_transition
 
 
@@ -107,6 +113,29 @@ class InMemoryStore(PersistenceStore):
 
     async def save_run(self, run: RunRecord) -> None:
         self.runs[run.run_id] = run
+        await self.prune_old_runs(keep=5)
+
+    async def prune_old_runs(self, keep: int = 5) -> int:
+        keep = max(1, int(keep))
+        ordered = sorted(self.runs.values(), key=lambda r: r.created_at, reverse=True)
+        if len(ordered) <= keep:
+            return 0
+        drop = ordered[keep:]
+        for r in drop:
+            self.runs.pop(r.run_id, None)
+            self.idempotency = {
+                k: v for k, v in self.idempotency.items() if v.get("run_id") != r.run_id
+            }
+        return len(drop)
+
+    async def delete_run(self, run_id: str) -> bool:
+        existed = run_id in self.runs
+        self.runs.pop(run_id, None)
+        self.idempotency = {
+            k: v for k, v in self.idempotency.items() if v.get("run_id") != run_id
+        }
+        self.snapshots = [s for s in self.snapshots if s.get("run_id") != run_id]
+        return existed
 
     async def load_run(self, run_id: str) -> RunRecord | None:
         return self.runs.get(run_id)
@@ -124,30 +153,38 @@ class InMemoryStore(PersistenceStore):
             }
         )
 
-    async def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+    async def list_runs(self, limit: int = 5) -> list[dict[str, Any]]:
+        from agent_orchestrator.api.telemetry import list_item_telemetry
+
         runs = sorted(self.runs.values(), key=lambda r: r.created_at, reverse=True)
         out: list[dict[str, Any]] = []
         for r in runs[:limit]:
             state = r.state.data if r.state else {}
             topic = (state.get("topic") or state.get("subject") or "").strip()
-            out.append(
-                {
-                    "run_id": r.run_id,
-                    "graph_name": r.graph_name,
-                    "status": r.status.value,
-                    "current_node": r.current_node,
-                    "error": r.error,
-                    "created_at": r.created_at,
-                    "updated_at": r.updated_at,
-                    "step": r.step,
-                    "title": topic or "Untitled task",
-                    "graph_label": (
-                        "Support"
-                        if r.graph_name == "support_resolution"
-                        else "Research"
-                    ),
-                }
+            item = {
+                "run_id": r.run_id,
+                "graph_name": r.graph_name,
+                "status": r.status.value,
+                "current_node": r.current_node,
+                "error": r.error,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+                "step": r.step,
+                "title": topic or "Untitled task",
+                "graph_label": (
+                    "Support"
+                    if r.graph_name == "support_resolution"
+                    else "Research"
+                ),
+            }
+            item.update(
+                list_item_telemetry(
+                    state,
+                    status=r.status.value,
+                    updated_at=r.updated_at,
+                )
             )
+            out.append(item)
         return out
 
     async def get_idempotency(self, key: str) -> dict[str, str] | None:
@@ -198,6 +235,16 @@ class GraphRunner:
             state = initial_state.clone()
         else:
             state = State(data=dict(initial_state or {}))
+        # Seed budget / circuit-breaker fields without clobbering explicit overrides.
+        defaults = default_budget_fields()
+        if not isinstance(state.get("budget"), dict):
+            state.set("budget", defaults["budget"])
+        else:
+            ensure_budget_state(state)
+        if state.get("execution_mode") not in {"agentic", "fast_fallback"}:
+            state.set("execution_mode", defaults["execution_mode"])
+        if state.get("circuit_breaker_triggered") is None:
+            state.set("circuit_breaker_triggered", defaults["circuit_breaker_triggered"])
         run = RunRecord(
             run_id=str(uuid.uuid4()),
             graph_name=self.graph.name,
@@ -226,6 +273,7 @@ class GraphRunner:
 
         if run.status == RunStatus.PENDING:
             self._set_status(run, RunStatus.RUNNING)
+            self._log_config_source(run)
         elif run.status == RunStatus.PAUSED:
             self._set_status(run, RunStatus.RUNNING)
         elif run.status == RunStatus.RETRYING:
@@ -296,6 +344,8 @@ class GraphRunner:
                 "revision_count",
                 int(run.state.get("revision_count") or 0) + 1,
             )
+            # Resume via static graph edges (not the original dynamic plan queue).
+            run.state.set("use_dynamic_plan", False)
             # Keep prior draft available so the writer revises it instead of starting over.
             prior = (
                 run.state.get("report")
@@ -362,6 +412,10 @@ class GraphRunner:
 
     async def _loop(self, run: RunRecord) -> RunRecord:
         while run.current_node and run.status == RunStatus.RUNNING:
+            # Circuit breaker: trip into fast_fallback but keep completing the graph.
+            self._apply_circuit_breaker_if_needed(run)
+            self._sync_budget_prompt_fields(run.state)
+
             node_name = run.current_node
             if node_name not in self.graph.nodes:
                 self._set_status(run, RunStatus.FAILED)
@@ -385,6 +439,17 @@ class GraphRunner:
                 if recovered:
                     # Fixer patched the failure and the original node succeeded on retry.
                     pass
+                elif node_name == "planner":
+                    # Don't stall the whole research run if Gemini hangs on the planner.
+                    seed_fallback_plan(run.state, reason=str(exc))
+                    run.error = (
+                        "Planner timed out / failed — continuing with a default fast path. "
+                        f"({exc})"
+                    )
+                    nxt = self.graph.next_nodes(node_name, run.state)
+                    run.current_node = nxt[0] if nxt else "knowledge_lookup"
+                    await self.store.save_run(run)
+                    continue
                 else:
                     fallback = self.graph.fallback_target(node_name)
                     if fallback:
@@ -400,7 +465,32 @@ class GraphRunner:
                     await self.store.save_run(run)
                     return run
 
-            # Success path — evaluate edges / terminals.
+            # Re-check after node spend (tokens / wall clock may have crossed limits).
+            self._apply_circuit_breaker_if_needed(run)
+
+            # Planner finished → activate dynamic plan (or keep static edges if none).
+            if node_name == "planner":
+                activated = apply_planner_result(
+                    run.state, available_nodes=set(self.graph.nodes)
+                )
+                await self.store.save_run(run)
+                if activated:
+                    planned = next_planned_node(run.state)
+                    if planned and planned in self.graph.nodes:
+                        run.current_node = planned
+                        await self.store.save_run(run)
+                        continue
+                # No usable plan → fall through to static edges from planner.
+
+            # Success path — prefer remaining plan steps when active.
+            if run.state.get("use_dynamic_plan"):
+                planned = next_planned_node(run.state)
+                if planned and planned in self.graph.nodes:
+                    run.current_node = planned
+                    await self.store.save_run(run)
+                    continue
+                # Plan exhausted: fall back to static edges from the node we just ran.
+
             if node_name in self.graph.terminal_nodes:
                 # Still allow edges if present; otherwise complete.
                 nxt = self.graph.next_nodes(node_name, run.state)
@@ -430,6 +520,88 @@ class GraphRunner:
             self._set_status(run, RunStatus.COMPLETED)
             await self.store.save_run(run)
         return run
+
+    @staticmethod
+    def _sync_budget_prompt_fields(state: State) -> None:
+        """Expose budget numbers for planner / agent prompt templates."""
+        budget = ensure_budget_state(state)
+        state.set("budget_max_tokens", budget["max_tokens_total"])
+        state.set("budget_max_latency_ms", budget["max_latency_ms"])
+        state.set("budget_max_agent_steps", budget["max_agent_steps"])
+        state.set("budget_tokens_used", budget["tokens_used"])
+        state.set(
+            "budget_token_soft_cap",
+            int(budget["max_tokens_total"] * 0.8),
+        )
+
+    def _log_config_source(self, run: RunRecord) -> None:
+        """Record whether this run used workflow defaults or a UI/API override."""
+        if run.state.get("config_source") is None:
+            return
+        if any(t.node_name == "workflow_config" for t in run.trace):
+            return
+        source = str(run.state.get("config_source") or "default")
+        if source not in {"default", "override"}:
+            source = "default"
+        cfg = run.state.get("workflow_config") or {}
+        preset = run.state.get("config_ui_preset")
+        event = TraceEvent(
+            node_name="workflow_config",
+            attempt=1,
+            started_at=_utcnow().isoformat(),
+            ended_at=_utcnow().isoformat(),
+            outcome="config",
+            error=None,
+            duration_ms=0.0,
+            input_snapshot={"config_source": source, "ui_preset": preset},
+            output_snapshot={
+                "config_source": source,
+                "ui_preset": preset,
+                "workflow_config": cfg if isinstance(cfg, dict) else {},
+                "message": (
+                    f"Run using {'overridden' if source == 'override' else 'default'} "
+                    f"workflow config"
+                    + (f" (preset={preset})" if preset else "")
+                ),
+            },
+            state_diff={},
+        )
+        run.trace.append(event)
+
+    def _apply_circuit_breaker_if_needed(self, run: RunRecord) -> None:
+        """If token or latency budget is exhausted, switch to fast_fallback and log once."""
+        tracker = BudgetTracker(run.state)
+        if not tracker.should_trip_circuit():
+            return
+        newly = tracker.activate_fast_fallback()
+        if not newly:
+            return
+        reason = tracker.trip_reason()
+        event = TraceEvent(
+            node_name="circuit_breaker",
+            attempt=1,
+            started_at=_utcnow().isoformat(),
+            ended_at=_utcnow().isoformat(),
+            outcome="circuit_breaker",
+            error=reason,
+            duration_ms=0.0,
+            input_snapshot={
+                "budget": dict(tracker.budget),
+                "execution_mode": "agentic",
+            },
+            output_snapshot={
+                "execution_mode": "fast_fallback",
+                "circuit_breaker_triggered": True,
+                "circuit_breaker_reason": reason,
+            },
+            state_diff={
+                "execution_mode": {"before": "agentic", "after": "fast_fallback"},
+                "circuit_breaker_triggered": {"before": False, "after": True},
+            },
+        )
+        run.trace.append(event)
+        run.updated_at = _utcnow().isoformat()
+
 
     async def _try_fixer_recovery(
         self, run: RunRecord, failed_node: str, exc: Exception
